@@ -1,0 +1,18 @@
+# Artefactos de compilación
+build/
+dist/
+
+# Binarios que descargan Instalar.bat / Compilar.bat
+rclone.exe
+ahk/
+
+# Configuración y datos locales (por si pruebas desde esta carpeta)
+config.ini
+sync.log
+sync.log.old
+data/
+backups/
+
+# Python
+__pycache__/
+*.pyc
