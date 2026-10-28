@@ -2,12 +2,6 @@
   <b>English</b> · <a href="README.es.md">Español</a>
 </p>
 
-<p align="center">
-  <img src="icons/syncing.png" width="96" alt="SyncDood syncing">
-  <img src="icons/ok.png" width="96" alt="SyncDood up to date">
-  <img src="icons/error.png" width="96" alt="SyncDood error">
-</p>
-
 # 🎮 SyncDood — your saves and states, the same on every PC
 
 > **Version 0.1** · 🌍 Follows the Windows language (English / Spanish)
