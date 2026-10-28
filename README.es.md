@@ -2,9 +2,15 @@
   <a href="README.md">English</a> · <b>Español</b>
 </p>
 
+<p align="center">
+  <img src="icons/syncing.png" width="96" alt="SyncDood sincronizando">
+  <img src="icons/ok.png" width="96" alt="SyncDood al día">
+  <img src="icons/error.png" width="96" alt="SyncDood con error">
+</p>
+
 # 🎮 SyncDood — tus partidas y states, iguales en todas tus PCs
 
-> **Versión 0.1** · 🌍 Se adapta al idioma de Windows (español / inglés)
+> **Versión 0.2** · 🌍 Se adapta al idioma de Windows (español / inglés)
 
 SyncDood mantiene tus **partidas guardadas** 💾 y tus **estados (states)** 📸 iguales en todas tus PCs usando **tu propia nube** ☁️. Vive en la bandeja del sistema y su ventana te deja ver el historial y cambiar carpetas, nube y opciones **sin editar ningún archivo**. Pensado para RetroArch, pero funciona con cualquier carpeta.
 
@@ -18,7 +24,9 @@ SyncDood mantiene tus **partidas guardadas** 💾 y tus **estados (states)** �
 - 🕹️ **Pestaña Partidas** con una tarjeta por juego, capturas y **restauración de versiones anteriores** de un state.
 - 🛟 **Respaldo de todo** lo que una sync reemplaza o borra, más **copias de conflictos**: no se pierde nada.
 - 🛡️ **Protección contra borrados**: frena una sync que borraría demasiado.
-- 🚫 **Exclusiones** (logs, shaders, cachés…) por carpeta.
+- 🚫 **Exclusiones** (logs, shaders, cachés…) por carpeta, elegidas en un **árbol con casillas**.
+- 🧭 **Rutas portátiles** (`%DOCUMENTS%\…`) y **Agregar desde la nube** para PCs con otro nombre de usuario.
+- 🗂️ Cómodo con **decenas de carpetas**: búsqueda, estado por carpeta y menús de desborde.
 - ☁️ **Muchas nubes**: OneDrive, Dropbox, MEGA / Google Drive (con su app), pCloud, Box, Filen, NAS / carpeta de red, Backblaze B2, Nextcloud…
 
 ## 🚀 Instalación (en cada PC)
@@ -26,11 +34,13 @@ SyncDood mantiene tus **partidas guardadas** 💾 y tus **estados (states)** �
 No necesita permisos de administrador.
 
 1. 📦 Descomprime la carpeta `SyncDood` donde quieras.
-2. 🖱️ Doble clic a **`Install.bat`**. Descarga rclone y AutoHotkey v2 (portátiles, dentro de la misma carpeta) y abre la app.
+2. 🖱️ Doble clic a **`Install.bat`**. Descarga rclone y AutoHotkey v2 (portátiles, dentro de la misma carpeta) y abre la app. Si detecta ajustes anteriores de SyncDood / RSY / SaveSync en el equipo, te ofrece una **instalación limpia** (equivale a *Desinstalar SyncDood…*: borra ajustes, historial, log, credenciales de la nube guardadas en esa PC y los registros de rclone; pregunta si conservar los respaldos; no toca tu nube ni tus carpetas de saves/states).
 3. 🧙 El asistente te pide: tu carpeta de **SAVES**, tu carpeta de **STATES**, *(opcional)* otras carpetas, y tu **nube** (muestra solo lo que esa nube necesita; en las más fáciles basta con iniciar sesión una vez en el navegador). En el diálogo de carpetas puedes **escribir o pegar la ruta** en la barra de direcciones.
 4. ✅ Listo: configura el inicio con Windows y hace la primera sincronización sola.
 
 📁 Las carpetas pueden estar en rutas distintas en cada PC. Lo que debe coincidir es la **nube** y el **nombre** de cada carpeta (`saves`, `states`, o como hayas llamado a las extra).
+
+🧭 **Misma carpeta, otro nombre de usuario.** Si agregas una carpeta que está dentro de tu carpeta de usuario de Windows (por ejemplo `C:\Users\Ana\Documents\Mi Juego`), SyncDood te ofrece guardarla como **`%DOCUMENTS%\Mi Juego`**, así la misma ubicación sirve en una PC cuyo usuario se llama distinto. Tokens disponibles: `%DOCUMENTS%`, `%SAVEDGAMES%`, `%DESKTOP%`, `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%` (cualquier otra variable de Windows también sirve). También puedes escribirlos directo en el cuadro de la ruta. En una PC nueva usa *Carpetas → Agregar desde la nube…*: lista las carpetas que ya existen en tu nube y solo te pregunta dónde va cada una en esa PC.
 
 **Primera sincronización:** esta PC se junta con la nube. Lo que exista en un solo lado se copia al otro; si un archivo está en los dos, gana el **más nuevo** y el perdedor va a los respaldos. Puedes instalar en tus PCs en cualquier orden. ¿Prefieres que siempre gane un lado? *Opciones → Primera sincronización: quién gana* (el más nuevo · esta PC · la nube).
 
@@ -62,6 +72,8 @@ No necesita permisos de administrador.
 1. Instala la app (*MEGA*, *Google Drive para escritorio*…) e inicia sesión.
 2. En SyncDood elige **Carpeta de la app de tu nube** y selecciona una carpeta dentro de ella. SyncDood crea ahí una subcarpeta `SyncDood`.
 3. Repite en cada PC con la **misma cuenta**.
+
+**MEGA, paso a paso:** instala la app de escritorio de MEGA e inicia sesión · en la app crea una sincronización entre una carpeta local nueva (por ejemplo `C:\MEGA\SyncDood-hub`) y una carpeta nueva de tu MEGA · en SyncDood elige *Carpeta de la app de tu nube* y selecciona esa carpeta local · en las demás PCs repite con la misma cuenta y espera a que la app de MEGA termine de bajar antes de la primera sincronización. Ojo con la cuota de transferencia de las cuentas gratuitas.
 
 Ojo: la app de la nube debe estar abierta, y la carpeta debe estar disponible sin conexión (Google Drive: *Reflejar archivos*; OneDrive: *Mantener siempre en este dispositivo*). Los cambios tardan un poco más en llegar porque ocurren dos sincronizaciones seguidas.
 </details>
@@ -114,7 +126,7 @@ Siete pestañas. Los cambios en carpetas, nube y opciones reinician SyncDood sol
 | 📊 **Estado** | El color del encabezado lo resume (🔵🟢🟠🔴), última sync, próxima revisión, barra de progreso, cada carpeta con su botón **Sincronizar** y la actividad reciente. |
 | 📜 **Historial** | Los últimos 200 eventos por carpeta, con filtro: ↑ Subido · ↓ Bajado · ✕ Borrado · ⚠ Conflicto · ✖ Falló. |
 | 🕹️ **Partidas** | Tus states, juego por juego. Mira abajo. |
-| 📁 **Carpetas** | Agregar, cambiar, quitar y abrir carpetas · **sincronizar solo la elegida** · editar **exclusiones** · *Primera sincronización / reparar*. |
+| 📁 **Carpetas** | Agregar carpetas (también **desde la nube**), cambiarlas, quitarlas y abrirlas · búsqueda y estado por carpeta, cómodo con decenas de carpetas · **sincronizar solo la elegida** · **opciones y exclusiones** (árbol con casillas, carpetas vacías) · *Primera sincronización / reparar*. |
 | ☁️ **Nube** | Muestra la nube actual, **cámbiala** y **prueba la conexión**. |
 | ⚙️ **Opciones** | Idioma, apariencia, intervalo, proceso del emulador, esperas, quién gana en la primera sync, respaldos, inicio, actualizaciones, modo de prueba, nombre de la PC. |
 | ℹ️ **Acerca de** | Versión, créditos y *Buscar actualizaciones*. |
@@ -146,11 +158,13 @@ No aparecen en Partidas, pero sus partidas normales sí se sincronizan si agrega
 <summary>🗂️ <b>Carpetas vacías</b></summary>
 
 Se sincronizan como carpetas reales en las nubes que las tienen (OneDrive, Dropbox, pCloud, Nextcloud, carpeta/NAS…). **Backblaze B2** no tiene carpetas reales, así que ahí se ignoran las vacías; los emuladores recrean las que necesitan.
+
+Es una **opción por carpeta** (activada por defecto): al agregar una carpeta, o después en *Carpetas → Opciones y exclusiones…*, el interruptor *Sincronizar también las carpetas vacías (conservar la estructura)* decide si las subcarpetas vacías también se crean en tus otras PCs. Actívalo cuando un juego o emulador necesite que exista su árbol de carpetas aunque esté vacío.
 </details>
 
 ### 🚫 Exclusiones
 
-*Carpetas → Exclusiones…* — una regla por línea (sintaxis de rclone, sin distinguir mayúsculas):
+*Carpetas → Opciones y exclusiones…* (y ese mismo panel al agregar una carpeta) muestra la carpeta como un **árbol con casillas**: quita la marca a cualquier archivo o carpeta completa que **no** quieras sincronizar (al desmarcar una carpeta se desmarca todo lo que contiene). Debajo del árbol hay un cuadro de **reglas extra**, una por línea (sintaxis de rclone, sin distinguir mayúsculas):
 
 | Regla | Excluye |
 |---|---|
@@ -159,7 +173,7 @@ Se sincronizan como carpetas reales en las nubes que las tienen (OneDrive, Dropb
 | `/logs/` | solo la carpeta `logs` en la raíz |
 | `/xbox_hdd.qcow2` | un archivo concreto en la raíz |
 
-Hay botones para elegir un archivo o carpeta y sugerencias comunes (`*.log`, `shaders/`, `cache/`, `*.qcow2`), y una vista previa dice cuántos archivos y cuánto espacio dejarían de sincronizarse. Las reglas pueden nombrar **carpetas enteras** (`/collections/`) también.
+Hay botones con sugerencias comunes (`*.log`, `shaders/`, `cache/`, `*.qcow2`). Lo que desmarcas en el árbol se guarda como reglas de ruta exacta (`/collections/old/`), así que árbol y reglas siempre coinciden; el árbol muestra hasta 4,000 elementos (para el resto usa las reglas).
 
 - 🔁 Al editar las reglas, la siguiente sync vuelve a listar esa carpeta sola (junta, **gana el más nuevo**, no borra nada).
 - 🔒 Lo excluido se ignora **en ambos lados y nunca se borra**: lo que ya estaba en la nube se queda (bórralo a mano para liberar espacio).
@@ -199,7 +213,7 @@ SyncDood consulta las *Releases* de GitHub (`kyaaadood/SyncDood`) en segundo pla
 <details>
 <summary>🏷️ <b>Publicar una versión nueva</b> (para quien desarrolla)</summary>
 
-La versión vive en **un solo lugar**: la línea `AppVersion` al inicio de `SyncDood.ahk` (ahora `"0.1"`).
+La versión vive en **un solo lugar**: la línea `AppVersion` al inicio de `SyncDood.ahk` (ahora `"0.2"`).
 
 1. Cambia `AppVersion` (p. ej. `"0.2"`).
 2. Crea una *Release* en GitHub en `kyaaadood/SyncDood` con el mismo número y una `v` delante (`v0.2`).
@@ -282,7 +296,6 @@ Con *Carpeta de la app de tu nube* la ruta puede ser distinta en cada PC; lo que
 *Ventana → Opciones*:
 
 - 🗑️ **Desinstalar SyncDood…** quita el acceso directo de inicio, `%LOCALAPPDATA%\SyncDood` (ajustes, historial, log), la conexión de rclone a tu nube (las credenciales guardadas en esta PC), los registros de sincronización de rclone de SyncDood y cualquier resto de RSY / SaveSync. Pregunta aparte si borrar los respaldos locales y el programa (en scripts sueltos solo se quitan los archivos propios de SyncDood, nunca toda la carpeta). **Nunca toca tu nube (archivos ni su carpeta `SyncDood`) ni tus carpetas de saves/states.**
-- 🧼 **Limpiar SaveSync viejo** borra solo lo que dejó el SaveSync anterior (`%LOCALAPPDATA%\SaveSync`, su acceso directo de inicio, la conexión de rclone `savesync` y sus registros de sincronización). Si SyncDood aún usa esa conexión, la conserva.
 
 Los `.exe` viejos (donde los hayas puesto) y cualquier carpeta `SaveSync` / `RSY` dentro de tu nube no se borran solos; quítalos a mano si ya no los necesitas.
 
@@ -293,6 +306,7 @@ Los `.exe` viejos (donde los hayas puesto) y cualquier carpeta `SaveSync` / `RSY
 
 - **Install.bat se cierra o no puede ejecutar scripts:** la política del equipo puede bloquear PowerShell. Pon `rclone.exe` junto a `SyncDood.ahk`, instala [AutoHotkey v2](https://www.autohotkey.com/) y abre `SyncDood.ahk` directamente.
 - **Las descargas están bloqueadas:** baja `rclone.exe` de [rclone.org/downloads](https://rclone.org/downloads/), ponlo junto a `SyncDood.ahk` e instala AutoHotkey v2 aparte.
+- **Backblaze B2 dice que superaste el límite diario:** son los topes diarios de la cuenta (descargas y operaciones). Se reinician a las 12:00 AM GMT (6:00 PM en México). Mientras tanto cierra SyncDood para no gastarlos de nuevo, y revisa en *Caps & Alerts* de tu cuenta si quieres subirlos. Una carpeta mal configurada o muy grande los agota rápido.
 - **Ícono rojo pidiendo «Primera sincronización / reparar»:** una sync se interrumpió en mal momento, o algo se movió/borró a mano. *Ventana → Carpetas → Primera sincronización / reparar…*
 - **El encabezado muestra un error pero está cortado:** pulsa **Detalles** (arriba a la derecha) para ver el mensaje completo y las últimas líneas de error de `sync.log`.
 - **«cannot find prior Path1 or Path2 listings» en el log:** rclone no tiene registro de sync de esa carpeta y esa nube (por ejemplo tras migrar o cambiar el nombre de la nube). SyncDood lo detecta y hace una primera sincronización solo (junta ambos lados, no borra nada).

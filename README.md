@@ -2,9 +2,15 @@
   <b>English</b> · <a href="README.es.md">Español</a>
 </p>
 
+<p align="center">
+  <img src="icons/syncing.png" width="96" alt="SyncDood syncing">
+  <img src="icons/ok.png" width="96" alt="SyncDood up to date">
+  <img src="icons/error.png" width="96" alt="SyncDood error">
+</p>
+
 # 🎮 SyncDood — your saves and states, the same on every PC
 
-> **Version 0.1** · 🌍 Follows the Windows language (English / Spanish)
+> **Version 0.2** · 🌍 Follows the Windows language (English / Spanish)
 
 SyncDood keeps your **game saves** 💾 and **save states** 📸 identical on all your PCs through **your own cloud** ☁️. It sits in the system tray, and its window lets you see the history and change folders, cloud and options — **no file editing needed**. Made with RetroArch in mind, but it works with any folder.
 
@@ -18,7 +24,9 @@ SyncDood keeps your **game saves** 💾 and **save states** 📸 identical on al
 - 🕹️ **Games tab** with a card per game, screenshots, and **restore older versions** of a save state.
 - 🛟 **Backups of everything** a sync replaces or deletes, plus **conflict copies** — nothing gets lost.
 - 🛡️ **Delete protection**: stops a sync that would delete too much.
-- 🚫 **Exclusions** (logs, shaders, caches…) per folder.
+- 🚫 **Exclusions** (logs, shaders, caches…) per folder, picked from a **tree with check boxes**.
+- 🧭 **Portable paths** (`%DOCUMENTS%\…`) and **Add from cloud** for PCs with a different user name.
+- 🗂️ Comfortable with **dozens of folders**: search, per-folder status, overflow menus.
 - ☁️ **Many clouds**: OneDrive, Dropbox, MEGA / Google Drive (via their app), pCloud, Box, Filen, NAS / network folder, Backblaze B2, Nextcloud…
 
 ## 🚀 Install (on every PC)
@@ -26,11 +34,13 @@ SyncDood keeps your **game saves** 💾 and **save states** 📸 identical on al
 No administrator rights needed.
 
 1. 📦 Unzip the `SyncDood` folder anywhere.
-2. 🖱️ Double-click **`Install.bat`**. It downloads rclone and AutoHotkey v2 (portable, in the same folder) and opens the app.
+2. 🖱️ Double-click **`Install.bat`**. It downloads rclone and AutoHotkey v2 (portable, in the same folder) and opens the app. If it finds earlier SyncDood / RSY / SaveSync settings on the PC, it offers a **clean install** (same as *Uninstall SyncDood…*: deletes settings, history, log, the cloud credentials stored on that PC and rclone's records; asks whether to keep the backups; never touches your cloud or your saves/states folders).
 3. 🧙 The wizard asks for: your **SAVES** folder, your **STATES** folder, *(optional)* any other folders, and your **cloud** (it only shows what that cloud needs; for the easiest ones you just sign in once in the browser). In the folder dialog you can **type or paste the path** in the address bar.
 4. ✅ Done: it sets up run-at-startup and does the first sync by itself.
 
 📁 Folders can live in different paths on each PC. What must match is the **cloud** and the **name** of each folder (`saves`, `states`, or whatever you named the extra ones).
+
+🧭 **Same folder, different user name.** When you add a folder that sits inside your Windows user folder (for example `C:\Users\Ana\Documents\My Game`), SyncDood offers to store it as **`%DOCUMENTS%\My Game`**, so the same location is valid on a PC whose user is called something else. Available tokens: `%DOCUMENTS%`, `%SAVEDGAMES%`, `%DESKTOP%`, `%APPDATA%`, `%LOCALAPPDATA%`, `%USERPROFILE%` (any other Windows variable works too). You can also type them straight into the path box. On a new PC use *Folders → Add from cloud…*: it lists the folders that already exist in your cloud and only asks where each one goes on that PC.
 
 **First sync:** this PC is merged with the cloud. What exists on only one side is copied to the other; if a file exists on both, the **newest wins** and the loser goes to the backups. You can install on your PCs in any order. Prefer one side to always win? *Options → First sync: who wins* (newest · this PC · the cloud).
 
@@ -62,6 +72,8 @@ No administrator rights needed.
 1. Install the app (*MEGA*, *Google Drive for desktop*…) and sign in.
 2. In SyncDood choose **Your cloud app's folder** and pick a folder inside it. SyncDood creates a `SyncDood` subfolder there.
 3. Repeat on every PC with the **same account**.
+
+**MEGA, step by step:** install the MEGA desktop app and sign in · in the app, create a sync between a new local folder (for example `C:\MEGA\SyncDood-hub`) and a new folder in your MEGA · in SyncDood choose *Your cloud app's folder* and select that local folder · on the other PCs repeat with the same account and let the MEGA app finish downloading before the first sync. Mind the transfer quota of free accounts.
 
 Keep in mind: the cloud app must be running, and the folder must be available offline (Google Drive: *Mirror files*; OneDrive: *Always keep on this device*). Changes take a bit longer to arrive because two syncs happen in a row.
 </details>
@@ -114,7 +126,7 @@ Seven tabs. Changes to folders, cloud and options restart SyncDood by themselves
 | 📊 **Status** | Header color sums it up (🔵🟢🟠🔴), last sync, next check, a progress bar, each folder with its own **Sync** button, and recent activity. |
 | 📜 **History** | Latest 200 events per folder, with a folder filter: ↑ Uploaded · ↓ Downloaded · ✕ Deleted · ⚠ Conflict · ✖ Failed. |
 | 🕹️ **Games** | Your save states, game by game. See below. |
-| 📁 **Folders** | Add, change, remove and open folders · **sync only the selected one** · edit **exclusions** · *First sync / repair*. |
+| 📁 **Folders** | Add folders (also **from the cloud**), change, remove and open them · search and per-folder status, comfortable with dozens of folders · **sync only the selected one** · **options and exclusions** (tree with check boxes, empty folders) · *First sync / repair*. |
 | ☁️ **Cloud** | Shows the current cloud, **change it** and **test the connection**. |
 | ⚙️ **Options** | Language, appearance, check interval, emulator process, waits, who wins on first sync, backups, startup, updates, test mode, PC name. |
 | ℹ️ **About** | Version, credits and *Check for updates*. |
@@ -146,11 +158,13 @@ They don't appear in Games, but their regular game saves do sync if you add thei
 <summary>🗂️ <b>Empty folders</b></summary>
 
 They sync as real folders on clouds that have them (OneDrive, Dropbox, pCloud, Nextcloud, folder/NAS…). **Backblaze B2** has no real folders, so empty ones are ignored there; emulators recreate what they need.
+
+It is a **per-folder option** (on by default): when you add a folder, or later in *Folders → Options and exclusions…*, the switch *Also sync empty folders (keep the folder structure)* decides whether the empty sub-folders are created on your other PCs too. Turn it on when a game or emulator needs its folder tree to exist even if it is empty.
 </details>
 
 ### 🚫 Exclusions
 
-*Folders → Exclusions…* — one rule per line (rclone syntax, case-insensitive):
+*Folders → Options and exclusions…* (and the same panel when you add a folder) shows the folder as a **tree with check boxes**: uncheck any file or whole folder you do **not** want to sync (unchecking a folder unchecks everything inside it). Below the tree there is a box for **extra rules**, one per line (rclone syntax, case-insensitive):
 
 | Rule | Excludes |
 |---|---|
@@ -159,7 +173,7 @@ They sync as real folders on clouds that have them (OneDrive, Dropbox, pCloud, N
 | `/logs/` | only the `logs` folder at the root |
 | `/xbox_hdd.qcow2` | one specific file at the root |
 
-There are buttons to pick a file or folder and common suggestions (`*.log`, `shaders/`, `cache/`, `*.qcow2`), plus a preview of how many files and how much space stop syncing. Rules can name **whole folders** (`/collections/`) too.
+There are buttons with common suggestions (`*.log`, `shaders/`, `cache/`, `*.qcow2`). What you uncheck in the tree is saved as exact-path rules (`/collections/old/`), so tree and rules always agree; trees show up to 4,000 items (use the rules for the rest).
 
 - 🔁 After editing rules, the next sync re-lists that folder by itself (merges, **newest wins**, deletes nothing).
 - 🔒 Excluded items are ignored **on both sides and never deleted**: what was already in the cloud stays (delete it by hand to free space).
@@ -199,7 +213,7 @@ SyncDood checks the GitHub *Releases* (`kyaaadood/SyncDood`) in the background, 
 <details>
 <summary>🏷️ <b>Publishing a new version</b> (for the developer)</summary>
 
-The version lives in **one place**: the `AppVersion` line at the top of `SyncDood.ahk` (now `"0.1"`).
+The version lives in **one place**: the `AppVersion` line at the top of `SyncDood.ahk` (now `"0.2"`).
 
 1. Change `AppVersion` (e.g. `"0.2"`).
 2. Create a GitHub *Release* in `kyaaadood/SyncDood` with the same number and a leading `v` (`v0.2`).
@@ -282,7 +296,6 @@ With *Your cloud app's folder* the path can differ on each PC; what must match i
 *Window → Options*:
 
 - 🗑️ **Uninstall SyncDood…** removes the startup shortcut, `%LOCALAPPDATA%\SyncDood` (settings, history, log), the rclone connection to your cloud (credentials stored on this PC), rclone's sync records for SyncDood and any RSY / SaveSync leftovers. It asks separately about deleting the local backups and the program itself (loose scripts: only SyncDood's own files, never the whole folder). **It never touches your cloud (files or its `SyncDood` folder) nor your saves/states folders.**
-- 🧼 **Clean old SaveSync** deletes only what the old SaveSync left (`%LOCALAPPDATA%\SaveSync`, its startup shortcut, the `savesync` rclone connection and its sync records). If SyncDood still uses that connection, it keeps it.
 
 The old `.exe` files (wherever you put them) and any `SaveSync` / `RSY` folder inside your cloud are not deleted automatically; remove them by hand if you don't need them.
 
@@ -293,6 +306,7 @@ The old `.exe` files (wherever you put them) and any `SaveSync` / `RSY` folder i
 
 - **Install.bat closes or can't run scripts:** the PC's policy may block PowerShell. Put `rclone.exe` next to `SyncDood.ahk`, install [AutoHotkey v2](https://www.autohotkey.com/) and open `SyncDood.ahk` directly.
 - **Downloads are blocked:** get `rclone.exe` from [rclone.org/downloads](https://rclone.org/downloads/), put it next to `SyncDood.ahk`, and install AutoHotkey v2 separately.
+- **Backblaze B2 says you exceeded the daily limit:** those are the account's daily caps (downloads and transactions). They reset at 12:00 AM GMT. Meanwhile quit SyncDood so it doesn't use them up again, and check *Caps & Alerts* in your account if you want to raise them. A misconfigured or very large folder uses them fast.
 - **Red icon asking for "First sync / repair":** a sync was interrupted at a bad moment, or something was moved/deleted by hand. *Window → Folders → First sync / repair…*
 - **The header shows an error but it's cut off:** click **Details** (top right) for the full message and the latest `sync.log` error lines.
 - **"cannot find prior Path1 or Path2 listings" in the log:** rclone has no sync record for that folder and cloud (e.g. after migrating or changing the cloud name). SyncDood detects it and runs a first sync by itself (merges both sides, deletes nothing).

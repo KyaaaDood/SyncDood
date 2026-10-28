@@ -76,6 +76,66 @@ if (-not $ahk) {
 }
 Say (L "AutoHotkey listo." "AutoHotkey ready.")
 
+# ------------------------------------------------------- Clean install ----
+# If settings from SyncDood / RSY / SaveSync exist on this PC, offer to wipe them first (same as the app's
+# "Uninstall SyncDood..." but without opening it). Your cloud and your saves/states folders are NEVER touched.
+$dirs = @('SyncDood', 'RSY', 'SaveSync') | ForEach-Object { Join-Path $env:LOCALAPPDATA $_ } | Where-Object { Test-Path $_ }
+if ($dirs) {
+    Write-Host ""
+    Say (L "Encontre configuracion anterior en este equipo:" "Found previous settings on this PC:")
+    $dirs | ForEach-Object { Write-Host ("   " + $_) }
+    Say (L "Una instalacion limpia borra esos ajustes, el historial, el log y las credenciales de la nube guardadas aqui. NO toca tu nube ni tus carpetas de saves/states." "A clean install deletes those settings, history, log and the cloud credentials stored here. It does NOT touch your cloud or your saves/states folders.")
+    $a = Read-Host (L "Hacer instalacion limpia? (S/N, Enter = N)" "Do a clean install? (Y/N, Enter = N)")
+    if ($a -match '^(s|si|y|yes)$') {
+        $keep = $true
+        $backups = $dirs | ForEach-Object { Join-Path $_ 'backups' } | Where-Object { Test-Path $_ }
+        if ($backups) {
+            $b = Read-Host (L "Conservar los respaldos locales (backups)? (S/N, Enter = S)" "Keep the local backups? (Y/N, Enter = Y)")
+            $keep = -not ($b -match '^(n|no)$')
+        }
+
+        Say (L "Cerrando SyncDood si esta abierto..." "Closing SyncDood if it is running...")
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -eq 'SyncDood.exe' -or $_.CommandLine -match 'SyncDood\.ahk|RSY\.ahk|SaveSync\.ahk' } |
+            Where-Object { $_.ProcessId -ne $PID } |
+            ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+        Start-Sleep -Milliseconds 800
+
+        # startup shortcuts
+        foreach ($n in 'SyncDood', 'RSY', 'SaveSync') {
+            Remove-Item (Join-Path ([Environment]::GetFolderPath('Startup')) ($n + '.lnk')) -Force -ErrorAction SilentlyContinue
+        }
+
+        # rclone connections (only the credentials stored on this PC)
+        $rc = $rclone
+        if (-not (Test-Path $rc)) { $rc = (Get-Command rclone.exe -ErrorAction SilentlyContinue).Source }
+        if ($rc) {
+            foreach ($n in 'syncdood', 'syncdood2', 'rsy', 'rsy2', 'savesync') {
+                & $rc config delete $n 2>$null | Out-Null
+            }
+        }
+
+        # rclone's bisync records
+        $bis = Join-Path $env:LOCALAPPDATA 'rclone\bisync'
+        if (Test-Path $bis) {
+            foreach ($pat in '*..syncdood_*', '*..syncdood2_*', '*..rsy_*', '*..rsy2_*', '*..savesync_*', '*_SyncDood_*', '*_RSY_*') {
+                Get-ChildItem -Path $bis -Filter $pat -File -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        # settings, history, log (backups only if you said so)
+        foreach ($d in $dirs) {
+            if ($keep) {
+                Get-ChildItem -Path $d -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -ne 'backups' } |
+                    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+            } else {
+                Remove-Item $d -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        Say (L "Listo: instalacion limpia hecha. Al abrir SyncDood te pedira carpetas y nube; la primera sincronizacion mezcla y no borra nada." "Done: clean install finished. SyncDood will ask for folders and cloud; the first sync merges and deletes nothing.")
+    }
+}
+
 # ------------------------------------------------------------- Open app ----
 Say (L "Abriendo SyncDood. Si es la primera vez, te pedira tus carpetas y tu nube." "Opening SyncDood. If this is the first time, it will ask for your folders and your cloud.")
 Start-Process -FilePath $ahk -ArgumentList ('"' + (Join-Path $here 'SyncDood.ahk') + '"')

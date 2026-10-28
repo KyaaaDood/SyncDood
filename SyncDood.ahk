@@ -20,7 +20,7 @@ SetWorkingDir(A_ScriptDir)
 ;@Ahk2Exe-SetName SyncDood
 ;@Ahk2Exe-SetDescription SyncDood - Save sync
 ;@Ahk2Exe-SetCopyright KyaaaDood
-;@Ahk2Exe-SetVersion 0.1.0.0
+;@Ahk2Exe-SetVersion 0.2.0.0
 
 ; ---------------------------------------------------------------- Paths -----
 AppDir      := EnvGet("LOCALAPPDATA") "\SyncDood"
@@ -33,8 +33,8 @@ StartupLink := A_Startup "\SyncDood.lnk"
 RemoteName  := "syncdood"     ; name of the rclone remote created by the wizard
 
 ; ---- Project info (shown in the About tab) ----------------------------------
-; >>> THE VERSION LIVES HERE. Keep it equal to your GitHub release tag (v0.1). <<<
-AppVersion  := "0.1"
+; >>> THE VERSION LIVES HERE. Keep it equal to your GitHub release tag (v0.2). <<<
+AppVersion  := "0.2"
 AppAuthor   := "KyaaaDood"
 GithubRepo  := "kyaaadood/SyncDood"     ; "user/repo" (also used by the update checker)
 GithubUrl   := "https://github.com/kyaaadood"       ; author page (About tab and tray menu)
@@ -66,7 +66,8 @@ DirCreate(DataDir)
 ; -------------------------------------------------------------- Language -----
 L10n := BuildStrings()
 Lang := DetectLang()
-Dpi  := A_ScreenDPI / 96
+Dpi  := A_ScreenDPI / 96      ; provisional: BuildMain measures the scale the controls really get
+BaseW := 0, BaseH := 0        ; client size (raw pixels) of the main window right after it was built
 
 ; ------------------------------------------------------------------ rclone ---
 Rclone := A_ScriptDir "\rclone.exe"
@@ -127,16 +128,24 @@ if RegExMatch(Remote, "^([^:\\/]{2,}):", &rm) {
 }
 
 ; [folders]  name=local_path   (the name is also the subfolder in the cloud)
+; The path may use tokens (%DOCUMENTS%\MyGame, %USERPROFILE%\...) so the same line works on PCs with a
+; different user name. FolderRaw keeps what is written in config.ini; Folders has the real path on THIS PC.
 Folders := Map()
 Folders.CaseSense := "Off"      ; "Saves" and "saves" are the same folder (some clouds ignore capitals)
+FolderRaw := Map()
+FolderRaw.CaseSense := "Off"
 foldersRaw := ""
 try {
     foldersRaw := IniRead(IniFile, "folders")
 }
 for line in StrSplit(foldersRaw, "`n", "`r") {
     p := InStr(line, "=")
-    if (p > 1)
-        Folders[Trim(SubStr(line, 1, p - 1))] := RTrim(Trim(SubStr(line, p + 1)), "\")
+    if (p > 1) {
+        fname := Trim(SubStr(line, 1, p - 1))
+        raw := RTrim(Trim(SubStr(line, p + 1)), "\")
+        FolderRaw[fname] := raw
+        Folders[fname] := RTrim(ExpandPath(raw), "\")
+    }
 }
 if (Folders.Count = 0) {
     MsgBox(T("no_folders"), "SyncDood", "Iconi")
@@ -240,6 +249,7 @@ SetTimer(StartupSync, AnyPending() ? -3000 : -15000)   ; after launch (network s
 SetTimer(PeriodicSync, IntervalMin * 60000)            ; every N minutes
 NextCheck := DateAdd(A_Now, IntervalMin, "Minutes")
 OnMessage(0x1A, OnSettingChange)                       ; WM_SETTINGCHANGE (Windows light/dark switch)
+OnMessage(0x2E0, OnDpiChanged)                         ; WM_DPICHANGED (window moved to a monitor with another scale)
 if (WatchProc != "")
     SetTimer(WatchRA, 30000)                           ; detects when you close the emulator
 if CheckUpd
@@ -502,7 +512,7 @@ BuildStrings() {
         , "v_cmp_ver", "Selected version  ·  {1}"
         , "v_cmp_only", "{1}"
         , "tab_status", "Status"
-        , "f_excl", "Exclusions…"
+        , "f_excl", "Options and exclusions…"
         , "f_col_excl", "Exclusions"
         , "ex_rules", "{1} rules"
         , "ex_title", "Exclusions - {1}"
@@ -565,7 +575,7 @@ BuildStrings() {
         , "col_file", "File"
         , "col_size", "Size"
         , "fmt_date", "MM/dd HH:mm"
-        , "f_intro", "Folders SyncDood keeps in sync. The name is the subfolder used in the cloud and must be the same on all your PCs; the local path can be different on each PC."
+        , "f_intro", "Folders SyncDood keeps in sync. The name is the subfolder used in the cloud and must be the same on all your PCs; the location can be different on each PC (and can use %DOCUMENTS% or %USERPROFILE% so it works with any user name)."
         , "f_add", "Add folder…"
         , "f_change", "Change path…"
         , "f_remove", "Remove"
@@ -580,6 +590,43 @@ BuildStrings() {
         , "f_remove_last", "You need to keep at least one folder."
         , "f_change_confirm", "Change the folder of '{1}' to:`n{2}`n`nSyncDood will do a first sync for it (merging this folder with the cloud). Nothing is lost: anything overwritten is backed up.`n`nContinue?"
         , "f_busy", "A sync is in progress. Try again when it finishes."
+        , "f_portable_ask", "This folder is inside your Windows user folder.`n`nSave it as:`n{1}`n`nso it also works on PCs with a different user name?"
+        , "f_cloud_add", "Add from cloud…"
+        , "f_portable_tag", "portable"
+        , "f_search", "Search:"
+        , "f_count", "{1} folders"
+        , "f_count_f", "{1} of {2} folders"
+        , "f_col_status", "Status"
+        , "st_summary", "{1} folders · {2} up to date · {3} with problems  —  see all"
+        , "hist_more", "More ({1}) ▾"
+        , "cf_looking", "Checking the cloud…"
+        , "cf_fail", "Could not read the cloud. Check the connection in the Cloud tab and try again."
+        , "cf_none", "There are no folders in the cloud that are missing on this PC."
+        , "cf_title", "Add from the cloud"
+        , "cf_help", "These folders already exist in your cloud but are not set up on this PC. Pick one and then choose where it goes on this PC."
+        , "cf_next", "Continue…"
+        , "pick_cloud", "Where should '{1}' go on this PC?"
+        , "fd_title_add", "Add folder"
+        , "fd_title_cloud", "Add folder from the cloud"
+        , "fd_title_edit", "Folder options - {1}"
+        , "fd_name", "Name in the cloud"
+        , "fd_path", "Folder on this PC"
+        , "fd_browse", "Browse…"
+        , "fd_portable", "Save the path as {1} (it also works on PCs with another user name)"
+        , "fd_tree", "What to sync"
+        , "fd_tree_help", "Uncheck what you do NOT want to sync (files or whole folders). Nothing is deleted."
+        , "fd_tree_empty", "Nothing to show yet: the folder is empty or doesn't exist. You can still add rules below."
+        , "fd_tree_trunc", "only the first {1} items are shown; use the rules below for the rest"
+        , "fd_excluded", "{1} item(s) will NOT be synced"
+        , "fd_all_synced", "Everything will be synced"
+        , "fd_adv", "Extra rules (optional)"
+        , "fd_empty", "Also sync empty folders (keep the folder structure)"
+        , "fd_empty_help", "Turn it on if the game or emulator needs its folders to exist even when they are empty. They are created on your other PCs too."
+        , "fd_empty_b2", "Your cloud (Backblaze B2) can't store empty folders."
+        , "fd_add", "Add folder"
+        , "fd_err_name", "Type a name for the folder."
+        , "fd_err_abs", "Choose a full folder path on this PC, like C:\Games\Saves."
+        , "fd_create_ask", "That folder doesn't exist yet:`n{1}`n`nCreate it?"
         , "re_local", "If a file exists here and in the cloud, THIS PC's version wins."
         , "re_cloud", "If a file exists here and in the cloud, the CLOUD's version wins."
         , "re_newer", "If a file exists here and in the cloud, the NEWEST one wins."
@@ -844,7 +891,7 @@ BuildStrings() {
         , "v_cmp_ver", "Versión elegida  ·  {1}"
         , "v_cmp_only", "{1}"
         , "tab_status", "Estado"
-        , "f_excl", "Exclusiones…"
+        , "f_excl", "Opciones y exclusiones…"
         , "f_col_excl", "Exclusiones"
         , "ex_rules", "{1} reglas"
         , "ex_title", "Exclusiones - {1}"
@@ -907,7 +954,7 @@ BuildStrings() {
         , "col_file", "Archivo"
         , "col_size", "Tamaño"
         , "fmt_date", "dd/MM HH:mm"
-        , "f_intro", "Carpetas que SyncDood mantiene sincronizadas. El nombre es la subcarpeta en la nube y debe ser el mismo en todas tus PCs; la ruta local puede ser distinta en cada PC."
+        , "f_intro", "Carpetas que SyncDood mantiene sincronizadas. El nombre es la subcarpeta en la nube y debe ser el mismo en todas tus PCs; la ubicación puede ser distinta en cada PC (y puede usar %DOCUMENTS% o %USERPROFILE% para que funcione con cualquier nombre de usuario)."
         , "f_add", "Agregar carpeta…"
         , "f_change", "Cambiar ruta…"
         , "f_remove", "Quitar"
@@ -922,6 +969,43 @@ BuildStrings() {
         , "f_remove_last", "Debes conservar al menos una carpeta."
         , "f_change_confirm", "Cambiar la carpeta de '{1}' a:`n{2}`n`nSyncDood hará una primera sincronización de ella (fusiona esta carpeta con la nube). No se pierde nada: lo que se sobrescriba queda en respaldos.`n`n¿Continuar?"
         , "f_busy", "Hay una sincronización en curso. Inténtalo cuando termine."
+        , "f_portable_ask", "Esta carpeta está dentro de la carpeta de tu usuario de Windows.`n`n¿Guardarla como:`n{1}`n`npara que también funcione en PCs con otro nombre de usuario?"
+        , "f_cloud_add", "Agregar desde la nube…"
+        , "f_portable_tag", "portátil"
+        , "f_search", "Buscar:"
+        , "f_count", "{1} carpetas"
+        , "f_count_f", "{1} de {2} carpetas"
+        , "f_col_status", "Estado"
+        , "st_summary", "{1} carpetas · {2} al día · {3} con problemas  —  ver todas"
+        , "hist_more", "Más ({1}) ▾"
+        , "cf_looking", "Consultando la nube…"
+        , "cf_fail", "No pude leer la nube. Revisa la conexión en la pestaña Nube e inténtalo de nuevo."
+        , "cf_none", "No hay carpetas en la nube que falten en esta PC."
+        , "cf_title", "Agregar desde la nube"
+        , "cf_help", "Estas carpetas ya existen en tu nube pero no están configuradas en esta PC. Elige una y luego indica en qué lugar de esta PC va."
+        , "cf_next", "Continuar…"
+        , "pick_cloud", "¿Dónde va '{1}' en esta PC?"
+        , "fd_title_add", "Agregar carpeta"
+        , "fd_title_cloud", "Agregar carpeta desde la nube"
+        , "fd_title_edit", "Opciones de la carpeta - {1}"
+        , "fd_name", "Nombre en la nube"
+        , "fd_path", "Carpeta en esta PC"
+        , "fd_browse", "Examinar…"
+        , "fd_portable", "Guardar la ruta como {1} (también sirve en PCs con otro nombre de usuario)"
+        , "fd_tree", "Qué sincronizar"
+        , "fd_tree_help", "Quita la marca a lo que NO quieras sincronizar (archivos o carpetas completas). No se borra nada."
+        , "fd_tree_empty", "Aún no hay nada que mostrar: la carpeta está vacía o no existe. Aun así puedes agregar reglas abajo."
+        , "fd_tree_trunc", "solo se muestran los primeros {1} elementos; usa las reglas de abajo para el resto"
+        , "fd_excluded", "{1} elemento(s) NO se sincronizarán"
+        , "fd_all_synced", "Se sincronizará todo"
+        , "fd_adv", "Reglas extra (opcional)"
+        , "fd_empty", "Sincronizar también las carpetas vacías (conservar la estructura)"
+        , "fd_empty_help", "Actívalo si el juego o emulador necesita que sus carpetas existan aunque estén vacías. También se crean en tus otras PCs."
+        , "fd_empty_b2", "Tu nube (Backblaze B2) no puede guardar carpetas vacías."
+        , "fd_add", "Agregar carpeta"
+        , "fd_err_name", "Escribe un nombre para la carpeta."
+        , "fd_err_abs", "Elige una ruta completa en esta PC, por ejemplo C:\Juegos\Saves."
+        , "fd_create_ask", "Esa carpeta aún no existe:`n{1}`n`n¿Quieres crearla?"
         , "re_local", "Si un archivo existe aquí y en la nube, gana la versión de ESTA PC."
         , "re_cloud", "Si un archivo existe aquí y en la nube, gana la versión de la NUBE."
         , "re_newer", "Si un archivo existe aquí y en la nube, gana el MÁS RECIENTE."
@@ -1114,6 +1198,53 @@ ForgetFolder(name) {
     try {
         FileDelete(DataDir "\excl_" name ".txt")
     }
+}
+
+; ============================================================================
+;  Portable paths.  A folder's path can start with a token so it is valid on every PC, whatever the
+;  Windows user name is:   %DOCUMENTS%\My Game   ->   C:\Users\<whoever>\Documents\My Game
+;  Tokens: %DOCUMENTS% %SAVEDGAMES% %DESKTOP% %LOCALAPPDATA% %APPDATA% %USERPROFILE%
+;  (any other Windows variable such as %PROGRAMDATA% also works). config.ini keeps the token form.
+; ============================================================================
+KnownDirs() {
+    prof := EnvGet("USERPROFILE")
+    return [["%DOCUMENTS%", A_MyDocuments]
+          , ["%SAVEDGAMES%", prof "\Saved Games"]
+          , ["%DESKTOP%", A_Desktop]
+          , ["%LOCALAPPDATA%", EnvGet("LOCALAPPDATA")]
+          , ["%APPDATA%", A_AppData]
+          , ["%USERPROFILE%", prof]]
+}
+
+; Real path on this PC of a path that may contain tokens
+ExpandPath(p) {
+    p := Trim(p)
+    if !InStr(p, "%")
+        return p
+    for d in KnownDirs() {
+        if (d[2] != "")
+            p := StrReplace(p, d[1], d[2])
+    }
+    n := DllCall("ExpandEnvironmentStringsW", "WStr", p, "Ptr", 0, "UInt", 0, "UInt")
+    if (n <= 1)
+        return p
+    buf := Buffer(n * 2)
+    DllCall("ExpandEnvironmentStringsW", "WStr", p, "Ptr", buf, "UInt", n, "UInt")
+    return StrGet(buf, "UTF-16")
+}
+
+; The portable form of a real path ("" if it is not inside any known folder of this user)
+PortablePath(p) {
+    p := RTrim(p, "\")
+    best := "", bestLen := 0
+    for d in KnownDirs() {
+        base := RTrim(d[2], "\")
+        if (base != "" && PathInside(p, base) && StrLen(base) > bestLen) {
+            best := d[1]
+            bestLen := StrLen(base)
+        }
+    }
+    return (best = "") ? "" : best SubStr(p, bestLen + 1)
 }
 
 ; ============================================================================
@@ -1834,7 +1965,7 @@ SyncFolder(name, path, resync, &nUp, &nDown, &nConf, forceMode := "", allowDel :
         , BackupDir "\" name "\" day
         , Remote "/_backup/" name "/" day
         , LogFile
-        , KeepsEmptyDirs() ? " --create-empty-src-dirs" : "")
+        , EmptyDirsFor(name) ? " --create-empty-src-dirs" : "")
     par := ParallelNow()
     cmd .= Format(" --transfers {1} --checkers {2}", par, par * 2)
     exFile := ExcludeFile(name)
@@ -1971,6 +2102,9 @@ FilterKey(name) {
     k := ""
     for pat in ExcludePatterns(name)
         k .= pat "`n"
+    ; a folder that treats empty folders differently from the cloud's default also needs the safe re-listing
+    if (EmptyDirsFor(name) != KeepsEmptyDirs())
+        k .= "#emptydirs=" (EmptyDirsFor(name) ? "1" : "0") "`n"
     return k
 }
 
@@ -2194,7 +2328,8 @@ ExcludeRegexes(name) {
 
 ; rclone-style glob -> PCRE (to preview and to ignore excluded files in the settle check)
 PatToRegex(pat) {
-    pat := Trim(StrReplace(pat, "\", "/"))
+    ; a backslash before a special character (\[ \* ...) escapes it; any other backslash is a Windows path separator
+    pat := Trim(RegExReplace(pat, "\\(?![*?\[\]{}!\\])", "/"))
     if (pat = "")
         return ""
     anch := (SubStr(pat, 1, 1) = "/")
@@ -2211,6 +2346,11 @@ PatToRegex(pat) {
     n := StrLen(pat)
     while (i <= n) {
         ch := SubStr(pat, i, 1)
+        if (ch = "\") {
+            rx .= RegExReplace(SubStr(pat, i + 1, 1), "[\\.+()|\[\]{}^$,*?]", "\$0")
+            i += 2
+            continue
+        }
         if (ch = "*") {
             if (SubStr(pat, i + 1, 1) = "*") {
                 rx .= ".*"
@@ -2709,14 +2849,14 @@ LoadTheme() {
             , "side", "0D111A", "sideText", "9FB0CC", "sideHov", "171F2E", "sideSel", "1F2B44"
             , "accent", "4F8CFF", "accentHov", "6FA1FF", "btn", "2A3447", "btnHov", "36435C"
             , "ok", "3DD68C", "warn", "F5B83D", "err", "FF6B6B", "info", "8794AB", "down", "35C7D6"
-            , "lvBg", "1A212D", "editBg", "0F141D", "track", "2B3445"
+            , "lvBg", "141923", "editBg", "0F141D", "track", "2B3445"
             , "bn_ok", "17603E", "bn_sync", "1B4B8F", "bn_warn", "8F5E0C", "bn_err", "8A2233")
     } else {
         c := Map("bg", "F2F4F8", "card", "FFFFFF", "border", "DCE1EA", "text", "1B2433", "sub", "667085"
             , "side", "14213D", "sideText", "AEBBD3", "sideHov", "1C2D55", "sideSel", "27407A"
             , "accent", "2F6BEB", "accentHov", "2557C2", "btn", "E3E8F1", "btnHov", "D3DAE8"
             , "ok", "1C9B57", "warn", "C27803", "err", "D13B3B", "info", "7D8799", "down", "0E8FA0"
-            , "lvBg", "FFFFFF", "editBg", "FFFFFF", "track", "DCE1EA"
+            , "lvBg", "F2F4F8", "editBg", "FFFFFF", "track", "DCE1EA"
             , "bn_ok", "1E7B4F", "bn_sync", "2154A3", "bn_warn", "B4690E", "bn_err", "A32638")
     }
     TH.Clear()
@@ -2912,7 +3052,7 @@ ShowMain(page := 0) {
 }
 
 BuildMain() {
-    global MainGui, MainBuilt, HistLV, FolderLV, GamesLV, IconFont, BannerCol, HoverHooked
+    global MainGui, MainBuilt, HistLV, FolderLV, GamesLV, IconFont, BannerCol, HoverHooked, Dpi, BaseW, BaseH
     MainBuilt := false
     LoadTheme()
     UI.Clear()
@@ -2933,6 +3073,14 @@ BuildMain() {
 
     ; ---- sidebar
     UI["side"] := g.Add("Text", Format("x0 y0 w{1} h{2} Background{3}", SW, H0, TH["side"]), "")
+    ; Real scale of this window: the sidebar was asked to be SW design units wide. Everything that is moved later
+    ; (Px) uses this, not A_ScreenDPI, which can differ (laptop screen vs external 4K monitor).
+    try {
+        UI["side"].GetPos(, , &sideRaw)
+        if (sideRaw > 0)
+            Dpi := sideRaw / SW
+    }
+    g.Opt("+MinSize" Px(900) "x" Px(620))
     logo := PicPath("ok")
     if (logo != "") {
         try {
@@ -2982,6 +3130,10 @@ BuildMain() {
     g.OnEvent("Size", OnMainSize)
     g.OnEvent("Close", (gobj) => gobj.Hide())
     g.Show("w" W0 " h" H0 " Hide")
+    BaseW := Px(W0), BaseH := Px(H0)
+    try {
+        g.GetClientPos(, , &BaseW, &BaseH)
+    }
     MainBuilt := true
 }
 
@@ -3003,6 +3155,11 @@ RebuildMain() {
     UpdateHeader()
     if wasVisible
         MainGui.Show()
+}
+
+OnDpiChanged(wParam, lParam, msg, hwnd) {
+    if (IsObject(MainGui) && MainBuilt && hwnd = MainGui.Hwnd)
+        SetTimer(RebuildMain, -400)
 }
 
 OnSettingChange(wParam, lParam, msg, hwnd) {
@@ -3044,7 +3201,11 @@ SetNav(sel) {
         for c in n["info"]["ctrls"]
             c.Redraw()
     }
-    UI["navBar"].Move(, Px(88 + (sel - 1) * 46 + 7))
+    try {
+        Nav[sel]["info"]["ctrls"][1].GetPos(, &sy, , &sh)
+        UI["navBar"].GetPos(, , , &bh)
+        UI["navBar"].Move(, sy + (sh - bh) // 2)
+    }
 }
 
 ShowPage(i) {
@@ -3112,12 +3273,15 @@ BuildStatusPage(g, arr) {
         r["lbl"] := AddTxt(g, arr, Format("x{1} y{2} w240 h22 +0x200", x + 44, y + 7), name, "s10 bold", TH["text"], TH["card"])
         r["path"] := AddTxt(g, arr, Format("x{1} y{2} w{3} h18 +0x4000", x + 44, y + 29, w - 44 - 452), path, "s8 norm", TH["sub"], TH["card"])
         r["stat"] := AddTxt(g, arr, Format("x{1} y{2} w300 h54 +0x200 +0x4000 Right", x + w - 432, y), "", "s9 norm", TH["sub"], TH["card"])
-        r["btn"] := AddBtn(g, arr, x + w - 124, y + 12, 112, 30, T("st_sync_folder"), SyncOne.Bind(name))
+        r["btn"] := AddBtn(g, arr, x + w - 124, y + 12, 112, 30, T("st_sync_folder"), RowSync.Bind(r))
         UI["rows"].Push(r)
         y += 60
     }
+    UI["fSum"] := ""
     if (Folders.Count > 4) {
-        AddTxt(g, arr, Format("x{1} y{2} w{3} h22 +0x200", x, y - 4, w), T("st_more_folders", Folders.Count - 4), "s9 norm", TH["sub"], TH["bg"])
+        ; many folders: the 4 that need attention first, and a one-line summary that opens the full list
+        UI["fSum"] := AddTxt(g, arr, Format("x{1} y{2} w{3} h22 +0x100 +0x200", x, y - 4, w), "", "s9 bold", TH["accent"], TH["bg"])
+        UI["fSum"].OnEvent("Click", (*) => ShowPage(PG_FOLDERS))
         y += 24
     }
 
@@ -3145,36 +3309,68 @@ SyncOne(name, *) {
     RunSync(T("reason_manual"), false, name)
 }
 
+; "Sync" button of a row on the Status page (the row shows whichever folder is in it right now)
+RowSync(r, *) {
+    SyncOne(r["name"])
+}
+
+; 0 = needs attention most ... 4 = nothing special
+FolderPriority(nm) {
+    fs := FState.Get(nm, "")
+    if !IsObject(fs)
+        return 4
+    switch fs["st"] {
+        case "error":
+            return 0
+        case "conflict":
+            return 1
+        case "syncing":
+            return 2
+        case "pending":
+            return 3
+    }
+    return 4
+}
+
 ; --------------------------------------------------------- Page: History -----
 BuildHistoryPage(g, arr) {
     global HistLV
     AddTxt(g, arr, Format("x{1} y22 w{2} h40 +0x200", CX, CW0), T("tab_history"), "s18 bold", TH["text"], TH["bg"])
     UI["chips"] := []
     xp := CX
+    limit := CX + CW0 - 160          ; keep room for the "More" button
+    over := []                       ; folders that do not fit: they go in the "More" menu
     names := [""]
     for name in Folders
         names.Push(name)
     for nm in names {
         lbl := (nm = "") ? T("hist_all") : nm
-        bw := Max(72, 32 + StrLen(lbl) * 8)
+        bw := Min(170, Max(72, 32 + StrLen(lbl) * 8))
+        if (nm != "" && (over.Length > 0 || xp + bw > limit)) {
+            over.Push(nm)
+            continue
+        }
         c := AddBtn(g, arr, xp, 74, bw, 28, lbl, ChipClick.Bind(nm), (nm = HistFilterName) ? "segon" : "norm")
         UI["chips"].Push(Map("ctrl", c, "name", nm))
         xp += bw + 8
     }
+    UI["moreNames"] := over
+    if (over.Length > 0)
+        UI["moreBtn"] := AddBtn(g, arr, xp, 74, 150, 28, MoreLabel(), ShowMoreMenu, HasItem(over, HistFilterName) ? "segon" : "norm")
     ; column titles (positions are set in LayoutHist)
     UI["hCols"] := []
     for lb in [T("col_date"), T("col_folder"), T("col_event"), T("col_file"), T("col_size")]
         UI["hCols"].Push(AddTxt(g, arr, Format("x{1} y118 w100 h20 +0x200", CX), lb, "s9 bold", TH["sub"], TH["bg"]))
     UI["hCols"][5].Opt("+0x2")
-    UI["hLine"] := g.Add("Text", Format("x{1} y140 w{2} h1 Background{3}", CX, CW0, TH["border"]), "")
+    UI["hLine"] := g.Add("Text", Format("x{1} y140 w{2} h1 Background{3}", CX, CW0 + 28, TH["border"]), "")
     arr.Push(UI["hLine"])
     g.SetFont("s9 norm c" TH["text"], "Segoe UI")
     HistLV := g.Add("ListView", Format("x{1} y144 w{2} h{3} -Hdr -Multi +LV0x10000 -E0x200 c{4} Background{5}"
-        , CX, CW0, H0 - 144 - 24, TH["text"], TH["lvBg"])
+        , CX, CW0 + 28, H0 - 144, TH["text"], TH["lvBg"])
         , [T("col_date"), T("col_folder"), T("col_event"), T("col_file"), T("col_size")])
     arr.Push(HistLV)
     UI["histEmpty"] := AddTxt(g, arr, Format("x{1} y{2} w{3} h28 +0x200 Center", CX, 170, CW0), T("st_none"), "s10 norm", TH["sub"], TH["lvBg"])
-    LayoutHist(Px(CW0))
+    LayoutHist(Px(CW0 + 28))
 }
 
 ; Column widths (design units) of the history list; the file column takes what is left
@@ -3199,7 +3395,26 @@ ChipClick(nm, *) {
     HistFilterName := nm
     for ch in UI["chips"]
         SetBtnKind(ch["ctrl"], (ch["name"] = nm) ? "segon" : "norm")
+    if UI.Has("moreBtn") {
+        SetBtnKind(UI["moreBtn"], HasItem(UI["moreNames"], nm) ? "segon" : "norm")
+        UI["moreBtn"].Text := MoreLabel()
+    }
     RefreshHistory()
+}
+
+; Label of the "More" button: the chosen folder if it is one of the hidden ones, else how many there are
+MoreLabel() {
+    if (HistFilterName != "" && HasItem(UI["moreNames"], HistFilterName))
+        return HistFilterName
+    return T("hist_more", UI["moreNames"].Length)
+}
+
+; Menu with the folders that did not fit as buttons
+ShowMoreMenu(*) {
+    m := Menu()
+    for nm in UI["moreNames"]
+        m.Add(StrReplace(nm, "&", "&&"), ChipClick.Bind(nm))
+    m.Show()
 }
 
 ; Colors the "event" column of the history list by type
@@ -3247,32 +3462,37 @@ BuildFoldersPage(g, arr) {
     AddTxt(g, arr, Format("x{1} y22 w{2} h40 +0x200", CX, CW0), T("tab_folders"), "s18 bold", TH["text"], TH["bg"])
     AddTxt(g, arr, Format("x{1} y68 w{2} h40", CX, CW0), T("f_intro"), "s9 norm", TH["sub"], TH["bg"])
     bx := CX
-    for it in [[T("f_add"), AddFolderUI, 140], [T("f_change"), ChangeFolderUI, 140], [T("f_remove"), RemoveFolderUI, 100], [T("f_open"), OpenFolderUI, 90]] {
+    for it in [[T("f_add"), AddFolderUI, 130], [T("f_cloud_add"), AddFromCloudUI, 176], [T("f_change"), ChangeFolderUI, 130], [T("f_remove"), RemoveFolderUI, 90], [T("f_open"), OpenFolderUI, 80]] {
         AddBtn(g, arr, bx, 114, it[3], 32, it[1], it[2])
         bx += it[3] + 8
     }
     bx := CX
-    for it in [[T("f_sync_one"), SyncSelectedUI, 220, "prim"], [T("f_excl"), ExcludeUI, 150, "norm"], [T("f_repair"), MenuResync, 250, "norm"]] {
+    for it in [[T("f_sync_one"), SyncSelectedUI, 200, "prim"], [T("f_excl"), ExcludeUI, 220, "norm"], [T("f_repair"), MenuResync, 250, "norm"]] {
         AddBtn(g, arr, bx, 154, it[3], 32, it[1], it[2], it[4])
         bx += it[3] + 8
     }
+    ; search (useful when there are many folders) + how many are shown
+    AddTxt(g, arr, Format("x{1} y198 w64 h26 +0x200", CX), T("f_search"), "s9 norm", TH["sub"], TH["bg"])
+    UI["fSearch"] := AddEdit(g, arr, CX + 66, 198, 240, "")
+    UI["fSearch"].OnEvent("Change", (*) => FillFolders())
+    UI["fCount"] := AddTxt(g, arr, Format("x{1} y198 w300 h26 +0x200", CX + 322), "", "s9 norm", TH["sub"], TH["bg"])
     UI["fCols"] := []
-    for lb in [T("f_col_name"), T("f_col_path"), T("f_col_excl")]
-        UI["fCols"].Push(AddTxt(g, arr, Format("x{1} y202 w100 h20 +0x200", CX), lb, "s9 bold", TH["sub"], TH["bg"]))
-    UI["fLine"] := g.Add("Text", Format("x{1} y224 w{2} h1 Background{3}", CX, CW0, TH["border"]), "")
+    for lb in [T("f_col_name"), T("f_col_path"), T("f_col_status"), T("f_col_excl")]
+        UI["fCols"].Push(AddTxt(g, arr, Format("x{1} y232 w100 h20 +0x200", CX), lb, "s9 bold", TH["sub"], TH["bg"]))
+    UI["fLine"] := g.Add("Text", Format("x{1} y254 w{2} h1 Background{3}", CX, CW0 + 28, TH["border"]), "")
     arr.Push(UI["fLine"])
     g.SetFont("s9 norm c" TH["text"], "Segoe UI")
-    FolderLV := g.Add("ListView", Format("x{1} y228 w{2} h{3} -Hdr -Multi +LV0x10000 -E0x200 c{4} Background{5}"
-        , CX, CW0, H0 - 228 - 24, TH["text"], TH["lvBg"])
-        , [T("f_col_name"), T("f_col_path"), T("f_col_excl")])
+    FolderLV := g.Add("ListView", Format("x{1} y258 w{2} h{3} -Hdr -Multi +LV0x10000 -E0x200 c{4} Background{5}"
+        , CX, CW0 + 28, H0 - 258, TH["text"], TH["lvBg"])
+        , [T("f_col_name"), T("f_col_path"), T("f_col_status"), T("f_col_excl")])
     arr.Push(FolderLV)
-    LayoutFolders(Px(CW0))
+    LayoutFolders(Px(CW0 + 28))
 }
 
 LayoutFolders(wRaw) {
     wd := wRaw / Dpi
-    cols := [190, 0, 130]
-    cols[2] := Max(160, wd - 190 - 130 - 24)
+    cols := [170, 0, 190, 90]
+    cols[2] := Max(140, wd - 170 - 190 - 90 - 24)
     x := 0
     for i, cw in cols {
         FolderLV.ModifyCol(i, Px(cw))
@@ -3358,8 +3578,7 @@ BuildOptionsPage(g, arr) {
     AddBtn(g, arr, lx + 336, y, 110, 36, T("o_open_log"), MenuOpenLog)
     AddBtn(g, arr, lx + 454, y, 130, 36, T("o_open_backups"), MenuOpenBackup)
     y += 46
-    AddBtn(g, arr, lx, y, 190, 30, T("o_clean_old"), CleanOldUI)
-    AddBtn(g, arr, lx + 198, y, 190, 30, T("o_uninstall"), UninstallUI, "danger")
+    AddBtn(g, arr, lx, y, 190, 30, T("o_uninstall"), UninstallUI, "danger")
 }
 
 ; ----------------------------------------------------------- Page: About -----
@@ -3414,7 +3633,7 @@ BuildGamesPage(g, arr) {
         c.OnEvent("Click", (*) => FillGamesGrid())
     g.SetFont("s9 norm c" TH["text"], "Segoe UI")
     GamesLV := g.Add("ListView", Format("x{1} y158 w{2} h{3} Icon -Multi +0x8 +0x100 +LV0x400 +LV0x10000 -E0x200 c{4} Background{5}"
-        , CX, CW0, H0 - 158 - 24, TH["text"], TH["lvBg"])
+        , CX, CW0 + 28, H0 - 158, TH["text"], TH["lvBg"])
         , [T("g_col_game")])
     arr.Push(GamesLV)
     GamesLV.OnEvent("DoubleClick", OpenGameDbl)
@@ -4557,8 +4776,8 @@ RestoreVersion(e, v) {
 OnMainSize(g, minMax, w, h) {
     if (minMax = -1 || !MainBuilt)
         return
-    dw := w - Px(W0)           ; how much bigger than the design size (raw pixels)
-    dh := h - Px(H0)
+    dw := w - BaseW            ; how much bigger than when it was built (raw pixels)
+    dh := h - BaseH
     UI["side"].Move(, , , h)
     UI["sideDot"].Move(, Px(H0 - 62) + dh)
     UI["sideTxt"].Move(, Px(H0 - 62) + dh)
@@ -4580,22 +4799,22 @@ OnMainSize(g, minMax, w, h) {
     for a in UI["act"]
         a["file"].Move(, , Px(CW0 - 326) + dw)
     ; history
-    HistLV.Move(, , Px(CW0) + dw, Px(H0 - 144 - 24) + dh)
-    UI["hLine"].Move(, , Px(CW0) + dw)
+    HistLV.Move(, , Px(CW0 + 28) + dw, Px(H0 - 144) + dh)
+    UI["hLine"].Move(, , Px(CW0 + 28) + dw)
     UI["histEmpty"].Move(, , Px(CW0) + dw)
-    LayoutHist(Px(CW0) + dw)
+    LayoutHist(Px(CW0 + 28) + dw)
     ; games
     for i, c in UI["gSort"]["btns"]
         c.Move(Px(CX + 560 + (i - 1) * 84) + dw)
-    GamesLV.Move(, , Px(CW0) + dw, Px(H0 - 158 - 24) + dh)
+    GamesLV.Move(, , Px(CW0 + 28) + dw, Px(H0 - 158) + dh)
     try {
         SendMessage(0x1016, 0, 0, GamesLV.Hwnd)         ; LVM_ARRANGE: reflow the cards to the new width now
     }
     UI["gEmpty"].Move(, , Px(CW0) + dw)
     ; folders
-    FolderLV.Move(, , Px(CW0) + dw, Px(H0 - 228 - 24) + dh)
-    UI["fLine"].Move(, , Px(CW0) + dw)
-    LayoutFolders(Px(CW0) + dw)
+    FolderLV.Move(, , Px(CW0 + 28) + dw, Px(H0 - 258) + dh)
+    UI["fLine"].Move(, , Px(CW0 + 28) + dw)
+    LayoutFolders(Px(CW0 + 28) + dw)
     ; cloud
     UI["cloudCard"].Move(, , Px(CW0) + dw)
     UI["cloudCur"].Move(, , Px(CW0 - 44) + dw)
@@ -4674,30 +4893,45 @@ UpdateHeader() {
         BarTick()
     SetTimer(BarTick, barOn ? 60 : 0)
 
-    ; folder rows
-    for r in UI["rows"] {
-        fs := FState[r["name"]]
+    ; folder rows: with many folders the ones that need attention come first
+    order := []
+    for pr in [0, 1, 2, 3, 4] {
+        for nm in Folders {
+            if (FolderPriority(nm) = pr)
+                order.Push(nm)
+        }
+    }
+    for i, r in UI["rows"] {
+        nm := order[i]
+        if (r["name"] != nm) {
+            r["name"] := nm
+            r["lbl"].Text := nm
+            r["path"].Text := Folders[nm]
+            r["key"] := ""
+        }
+        fs := FState[nm]
         key := fs["st"] "|" fs["when"] "|" fs["msg"]
         if (key = r["key"])
             continue
         r["key"] := key
-        switch fs["st"] {
-            case "syncing":
-                c := TH["accent"], txt := T("st_folder_syncing")
-            case "ok":
-                c := TH["ok"], txt := T("st_folder_ok", fs["when"])
-            case "conflict":
-                c := TH["warn"], txt := T("st_folder_conflict", fs["when"])
-            case "error":
-                c := TH["err"], txt := T("st_folder_error", fs["msg"])
-            case "pending":
-                c := TH["info"], txt := T("st_folder_pending")
-            default:
-                c := TH["info"], txt := T("st_folder_wait")
-        }
+        txt := FolderStatus(fs, &c)
         Recolor(r["dot"], c)
         r["stat"].Text := txt
     }
+    if IsObject(UI["fSum"]) {
+        nOk := 0, nBad := 0
+        for nm in Folders {
+            st := FState[nm]["st"]
+            if (st = "ok")
+                nOk += 1
+            else if (st = "error" || st = "conflict")
+                nBad += 1
+        }
+        sumTxt := T("st_summary", Folders.Count, nOk, nBad)
+        if (UI["fSum"].Text != sumTxt)
+            UI["fSum"].Text := sumTxt
+    }
+    RefreshFolderStatus()
     RefreshActivity()
 }
 
@@ -4832,142 +5066,558 @@ RefreshHistory() {
 
 ; ---------------------------------------------------------------- Folders ----
 FillFolders() {
-    sel := FolderLV.GetNext(0)
+    selName := ""
+    row := FolderLV.GetNext(0)
+    if (row > 0)
+        selName := FolderLV.GetText(row, 1)
+    flt := UI.Has("fSearch") ? Trim(UI["fSearch"].Value) : ""
+    FolderLV.Opt("-Redraw")
     FolderLV.Delete()
+    shown := 0
+    selRow := 0
     for name, path in Folders {
+        if (flt != "" && !InStr(name, flt) && !InStr(path, flt))
+            continue
         n := ExcludePatterns(name).Length
-        FolderLV.Add(, name, path, (n > 0) ? T("ex_rules", n) : "—")
+        shown += 1
+        shownPath := path
+        if (FolderRaw.Get(name, path) != path)
+            shownPath .= "   [" T("f_portable_tag") "]"
+        FolderLV.Add(, name, shownPath, FolderStatus(FState.Get(name, ""), &c), (n > 0) ? T("ex_rules", n) : "—")
+        if (name = selName)
+            selRow := shown
     }
-    if (sel > 0 && sel <= FolderLV.GetCount())
-        FolderLV.Modify(sel, "Select Focus")
+    if (selRow > 0)
+        FolderLV.Modify(selRow, "Select Focus")
+    FolderLV.Opt("+Redraw")
+    if UI.Has("fCount")
+        UI["fCount"].Text := (flt = "") ? T("f_count", Folders.Count) : T("f_count_f", shown, Folders.Count)
 }
 
-; Dialog to edit a folder's exclusion rules, with a live preview of what they hide
-ExcludeUI(*) {
-    name := SelectedFolder()
-    if (name = "")
-        return
-    path := Folders[name]
-    files := []                               ; [relative path, size] for the preview
-    base := StrLen(path) + 2
-    if DirExist(path) {
-        Loop Files path "\*", "FR"
-            files.Push([SubStr(A_LoopFilePath, base), A_LoopFileSize])
+; Text (and color) that describes the sync state of one folder
+FolderStatus(fs, &c) {
+    c := TH["info"]
+    if !IsObject(fs)
+        return T("st_folder_wait")
+    switch fs["st"] {
+        case "syncing":
+            c := TH["accent"]
+            return T("st_folder_syncing")
+        case "ok":
+            c := TH["ok"]
+            return T("st_folder_ok", fs["when"])
+        case "conflict":
+            c := TH["warn"]
+            return T("st_folder_conflict", fs["when"])
+        case "error":
+            c := TH["err"]
+            return T("st_folder_error", fs["msg"])
+        case "pending":
+            return T("st_folder_pending")
     }
-    cur := ""
-    for pat in ExcludePatterns(name)
-        cur .= pat "`r`n"
+    return T("st_folder_wait")
+}
 
-    d := Gui("+Owner" MainGui.Hwnd, T("ex_title", name))
+; Lighter than FillFolders: only the "Status" column of the rows already shown
+RefreshFolderStatus() {
+    if !IsObject(FolderLV)
+        return
+    Loop FolderLV.GetCount() {
+        txt := FolderStatus(FState.Get(FolderLV.GetText(A_Index, 1), ""), &c)
+        if (FolderLV.GetText(A_Index, 3) != txt)
+            FolderLV.Modify(A_Index, "Col3", txt)
+    }
+}
+
+; ============================================================================
+;  Folder dialog: add a folder, add one that already exists in the cloud, or edit a folder's options.
+;    mode "add"   : new folder (the path is picked first)
+;    mode "cloud" : a folder that already exists in the cloud (the name is fixed, you choose where it goes on this PC)
+;    mode "edit"  : options of an existing folder (exclusions, empty folders)
+;  Everything is decided in this one window: name, location (portable if possible), what to sync (tree with
+;  check boxes), extra rules and whether empty folders are synced too.
+; ============================================================================
+FolderDialog(mode, name := "", preset := "") {
+    isEdit := (mode = "edit")
+    isCloud := (mode = "cloud")
+    W := 668
+    st := Map("trunc", false, "port", "", "auto", "", "advInit", false)
+    nodes := Map()                                  ; tree item id -> [relative path, is folder, checked]
+    cur := isEdit ? ExcludePatterns(name) : []
+    managed := Map()                                ; rules the tree can show (a plain path): key -> rule
+    advLines := []                                  ; rules the tree cannot show (wildcards...)
+    for ln0 in cur {
+        mk := ManagedRuleKey(ln0)
+        if (mk != "")
+            managed[mk] := ln0
+        else
+            advLines.Push(ln0)
+    }
+    canEmpty := KeepsEmptyDirs()
+
+    ; ---- behavior (defined first; it uses the controls created below) ------------------------------
+    AddRule(txt, *) {
+        for ln in StrSplit(eAdv.Value, "`n", "`r") {
+            if (StrLower(Trim(ln)) = StrLower(txt))
+                return
+        }
+        v := RTrim(eAdv.Value, "`r`n")
+        eAdv.Value := (v = "" ? "" : v "`r`n") txt "`r`n"
+    }
+
+    Recount() {
+        rules := ExcTreeRules(tv, nodes, [])
+        txt2 := rules.Length ? T("fd_excluded", rules.Length) : T("fd_all_synced")
+        if st["trunc"]
+            txt2 .= "  ·  " T("fd_tree_trunc", ExcTreeMax())
+        else if (nodes.Count = 0)
+            txt2 := T("fd_tree_empty")
+        lInfo.Text := txt2
+    }
+
+    UpdatePortable() {
+        rawp := Trim(ePath.Value)
+        port := (rawp != "" && !InStr(rawp, "%")) ? PortablePath(ExpandPath(rawp)) : ""
+        st["port"] := port
+        show := (port != "" && !isEdit)
+        tPort["box"].Visible := show
+        tPort["lbl"].Visible := show
+        if show
+            tPort["lbl"].Text := T("fd_portable", port)
+    }
+
+    LoadTree() {
+        absp := RTrim(ExpandPath(ePath.Value), "\")
+        tv.Opt("-Redraw")
+        tv.Delete()
+        nodes.Clear()
+        used := Map()
+        ctx := Map("count", 0, "max", ExcTreeMax(), "trunc", false, "managed", managed, "used", used
+            , "iF", iFolder ? " Icon" iFolder : "", "iD", iFile ? " Icon" iFile : "")
+        if (absp != "" && DirExist(absp))
+            ExcTreeFill(tv, nodes, absp, "", 0, false, ctx)
+        tv.Opt("+Redraw")
+        st["trunc"] := ctx["trunc"]
+        if !st["advInit"] {
+            ; first load: rules that matched nothing in the tree stay as text rules (they are not lost)
+            st["advInit"] := true
+            extra := ""
+            for mk2, rule in managed {
+                if !used.Has(mk2)
+                    extra .= rule "`r`n"
+            }
+            if (extra != "")
+                eAdv.Value := eAdv.Value extra
+        }
+        Recount()
+    }
+
+    ; a check box was clicked: a folder takes everything inside it along; checking something re-checks its parents.
+    ; Done a moment later, when Windows has already updated the box, by comparing what is shown with what we know.
+    OnCheck(ctrl, item, *) {
+        SetTimer(Reconcile, -25)
+    }
+
+    Reconcile() {
+        for id, nd in nodes {
+            if ((tv.Get(id, "Check") ? true : false) != nd[3]) {
+                ExcTreeApply(tv, nodes, id, !nd[3])
+                break
+            }
+        }
+        Recount()
+    }
+
+    Browse() {
+        start := (Trim(ePath.Value) != "") ? RTrim(ExpandPath(ePath.Value), "\") : ""
+        picked := SelectFolder(isCloud ? T("pick_cloud", name) : T("pick_add"), start, d.Hwnd)
+        if (picked = "")
+            return
+        picked := RTrim(picked, "\")
+        ePath.Value := picked
+        if !isCloud {
+            SplitPath(picked, &leaf)
+            leaf := RegExReplace(leaf, "[^\w\-]", "_")
+            if (Trim(eName.Value) = "" || eName.Value = st["auto"]) {
+                eName.Value := leaf
+                st["auto"] := leaf
+            }
+        }
+        UpdatePortable()
+        LoadTree()
+    }
+
+    PathChanged(*) {
+        UpdatePortable()
+        SetTimer(LoadTree, -700)
+    }
+
+    AddPat(pats, seen, ln) {
+        ln := Trim(ln)
+        ; rclone reads "\" as an escape: turn Windows paths (shaders\) into "/" (keeps \* \? etc.)
+        ln := RegExReplace(ln, "\\(?![*?\[\]{}!\\])", "/")
+        if (ln = "" || SubStr(ln, 1, 1) = "#" || SubStr(ln, 1, 1) = ";")
+            return
+        if seen.Has(StrLower(ln))
+            return
+        seen[StrLower(ln)] := true
+        pats.Push(ln)
+    }
+
+    Accept(*) {
+        if (!isEdit && CheckBusy())      ; adding restarts the app: wait for a running sync
+            return
+        nm := (isCloud || isEdit) ? name : RegExReplace(Trim(eName.Value), "[^\w\-]", "_")
+        rawText := Trim(ePath.Value)
+        absp := RTrim(ExpandPath(rawText), "\")
+        if !isEdit {
+            if (nm = "") {
+                MsgBox(T("fd_err_name"), "SyncDood", "Iconx")
+                return
+            }
+            for fn in Folders {
+                if (StrLower(fn) = StrLower(nm)) {
+                    MsgBox(T("f_dup_name"), "SyncDood", "Iconx")
+                    return
+                }
+            }
+            if ReservedName(nm) {
+                MsgBox(T("f_reserved"), "SyncDood", "Iconx")
+                return
+            }
+            if !RegExMatch(absp, "^([A-Za-z]:\\|\\\\)[^\\]") {
+                MsgBox(T("fd_err_abs"), "SyncDood", "Iconx")
+                return
+            }
+            for fn, ep in Folders {
+                if (StrLower(ep) = StrLower(absp)) {
+                    MsgBox(T("f_dup_path"), "SyncDood", "Iconx")
+                    return
+                }
+            }
+            if (PathInside(BackupDir, absp) || PathInside(absp, BackupDir)) {
+                MsgBox(T("f_inside_backup", BackupDir), "SyncDood", "Iconx")
+                return
+            }
+            if !DirExist(absp) {
+                if (MsgBox(T("fd_create_ask", absp), "SyncDood", "YesNo Icon?") != "Yes")
+                    return
+                try {
+                    DirCreate(absp)
+                } catch {
+                    MsgBox(T("fd_err_abs"), "SyncDood", "Iconx")
+                    return
+                }
+            }
+        }
+
+        ; rules: what was unchecked in the tree + the text rules
+        pats := []
+        seen := Map()
+        for rl in ExcTreeRules(tv, nodes, [])
+            AddPat(pats, seen, rl)
+        for ln in StrSplit(eAdv.Value, "`n", "`r")
+            AddPat(pats, seen, ln)
+        SaveExclusions(nm, pats)
+        if canEmpty
+            IniWrite(tEmpty["on"] ? "1" : "0", IniFile, "emptydirs", nm)
+
+        if isEdit {
+            FillFolders()
+            d.Destroy()
+            return
+        }
+        rawOut := absp
+        if InStr(rawText, "%")
+            rawOut := rawText
+        else if (tPort["on"] && st["port"] != "")
+            rawOut := st["port"]
+        Folders[nm] := absp
+        FolderRaw[nm] := rawOut
+        SaveFolders()
+        ForgetFolder(nm)              ; a new folder: its own first sync
+        d.Destroy()
+        RestartApp(PG_FOLDERS)
+    }
+
+    ; ---- window ------------------------------------------------------------------------------------
+    title := isEdit ? T("fd_title_edit", name) : (isCloud ? T("fd_title_cloud") : T("fd_title_add"))
+    d := Gui("+Owner" MainGui.Hwnd, title)
     d.BackColor := TH["bg"]
     d.MarginX := 16
     d.MarginY := 14
     d.SetFont("s9 norm", "Segoe UI")
-    AddTxt(d, "", "x16 y14 w640 h70", T("ex_help"), "s9 norm", TH["sub"], TH["bg"])
-    e := AddEdit(d, "", 16, 92, 640, cur, "r10 -Wrap +VScroll")
-    prev := AddTxt(d, "", "x16 y270 w640 h24 +0x200", "", "s9 bold", TH["text"], TH["bg"])
 
-    UpdatePrev(*) {
-        rxs := []
-        for line in StrSplit(e.Value, "`n", "`r") {
-            line := Trim(line)
-            if (line = "" || SubStr(line, 1, 1) = "#" || SubStr(line, 1, 1) = ";")
-                continue
-            rx := PatToRegex(line)
-            if (rx != "")
-                rxs.Push(rx)
-        }
-        if (rxs.Length = 0) {
-            prev.Text := T("ex_none")
-            return
-        }
-        cnt := 0, tot := 0
-        for f in files {
-            if IsExcluded(f[1], rxs) {
-                cnt += 1
-                tot += f[2]
-            }
-        }
-        prev.Text := T("ex_preview", cnt, FormatSize(tot) != "" ? FormatSize(tot) : "0 B")
+    y := 14
+    AddTxt(d, "", Format("x16 y{1} w190 h20 +0x200", y), T("fd_name"), "s9 bold", TH["text"], TH["bg"])
+    AddTxt(d, "", Format("x222 y{1} w{2} h20 +0x200", y, W - 206), T("fd_path"), "s9 bold", TH["text"], TH["bg"])
+    y += 22
+    eName := AddEdit(d, "", 16, y, 190, (isEdit || isCloud) ? name : "", (isEdit || isCloud) ? "ReadOnly" : "")
+    startPath := isEdit ? Folders[name] : preset
+    ePath := AddEdit(d, "", 222, y, isEdit ? W - 206 : W - 206 - 108, startPath, isEdit ? "ReadOnly" : "")
+    bBrowse := AddBtn(d, "", 16 + W - 100, y - 2, 100, 26, T("fd_browse"), (*) => Browse())
+    bBrowse.Visible := !isEdit
+    y += 34
+    tPort := AddToggle(d, "", 16, y, W, T("fd_portable", "%DOCUMENTS%"), true)
+    y += 34
+
+    AddTxt(d, "", Format("x16 y{1} w{2} h20 +0x200", y, W), T("fd_tree"), "s9 bold", TH["text"], TH["bg"])
+    y += 20
+    AddTxt(d, "", Format("x16 y{1} w{2} h20 +0x200", y, W), T("fd_tree_help"), "s8 norm", TH["sub"], TH["bg"])
+    y += 22
+    d.SetFont("s9 norm c" TH["text"], "Segoe UI")
+    tv := d.Add("TreeView", Format("x16 y{1} w{2} h190 Checked c{3} Background{4}", y, W, TH["text"], TH["card"]))
+    il := IL_Create(2)
+    iFolder := IL_Add(il, "shell32.dll", 4)
+    iFile := IL_Add(il, "shell32.dll", 1)
+    try {
+        tv.SetImageList(il)
     }
-
-    AddLine(txt, *) {
-        for line in StrSplit(e.Value, "`n", "`r") {
-            if (StrLower(Trim(line)) = StrLower(txt))
-                return
-        }
-        v := RTrim(e.Value, "`r`n")
-        e.Value := (v = "" ? "" : v "`r`n") txt "`r`n"
-        UpdatePrev()
+    try {
+        DllCall("uxtheme\SetWindowTheme", "Ptr", tv.Hwnd, "Str", DarkNow ? "DarkMode_Explorer" : "Explorer", "Ptr", 0)
     }
+    y += 194
+    lInfo := AddTxt(d, "", Format("x16 y{1} w{2} h20 +0x200", y, W), "", "s9 norm", TH["sub"], TH["bg"])
+    y += 28
 
-    AddFile(*) {
-        sel := FileSelect(1, path "\", T("ex_pick_file"))
-        if (sel = "")
-            return
-        if (SubStr(sel, 1, StrLen(path) + 1) != path "\") {
-            MsgBox(T("ex_outside"), "SyncDood", "Iconx")
-            return
-        }
-        AddLine("/" StrReplace(SubStr(sel, StrLen(path) + 2), "\", "/"))
-    }
-
-    AddDir(*) {
-        sel := RTrim(SelectFolder(T("ex_pick_folder"), path, d.Hwnd), "\")
-        if (sel = "")
-            return
-        if (SubStr(sel, 1, StrLen(path) + 1) != path "\") {
-            MsgBox(T("ex_outside"), "SyncDood", "Iconx")
-            return
-        }
-        AddLine("/" StrReplace(SubStr(sel, StrLen(path) + 2), "\", "/") "/")
-    }
-
-    SaveEx(*) {
-        pats := []
-        for line in StrSplit(e.Value, "`n", "`r") {
-            line := Trim(line)
-            ; rclone reads "\" as an escape: turn Windows paths (shaders\) into "/" (keeps \* \? etc.)
-            line := RegExReplace(line, "\\(?![*?\[\]{}!\\])", "/")
-            if (line != "" && SubStr(line, 1, 1) != "#" && SubStr(line, 1, 1) != ";")
-                pats.Push(line)
-        }
-        f := ExcludeFile(name)
-        if (pats.Length = 0) {
-            try {
-                FileDelete(f)
-            }
-        } else {
-            DirCreate(AppDir "\exclude")
-            out := "# SyncDood exclusions for '" name "' (rclone syntax, one rule per line)`n"
-            for pt in pats
-                out .= pt "`n"
-            try {
-                FileDelete(f)
-            }
-            FileAppend(out, f, "UTF-8-RAW")
-        }
-        FillFolders()
-        d.Destroy()
-    }
-
-    x := 16
-    AddBtn(d, "", x, 304, 96, 28, T("ex_add_file"), AddFile)
-    x += 104
-    AddBtn(d, "", x, 304, 96, 28, T("ex_add_folder"), AddDir)
-    x += 112
+    AddTxt(d, "", Format("x16 y{1} w200 h26 +0x200", y), T("fd_adv"), "s9 bold", TH["text"], TH["bg"])
+    xs := 222
     for sug in ["*.log", "*.tmp", "shaders/", "cache/", "*.qcow2"] {
-        w := 36 + StrLen(sug) * 7
-        AddBtn(d, "", x, 304, w, 28, "+ " sug, AddLine.Bind(sug))
-        x += w + 6
+        bw := 36 + StrLen(sug) * 7
+        AddBtn(d, "", xs, y, bw, 26, "+ " sug, AddRule.Bind(sug))
+        xs += bw + 6
     }
-    AddBtn(d, "", 16, 352, 130, 34, T("ex_save"), SaveEx, "prim", "s9 bold")
-    AddBtn(d, "", 154, 352, 110, 34, T("cd_cancel"), (*) => d.Destroy())
-    e.OnEvent("Change", (*) => SetTimer(UpdatePrev, -250))
+    y += 30
+    advTxt := ""
+    for ln0 in advLines
+        advTxt .= ln0 "`r`n"
+    eAdv := AddEdit(d, "", 16, y, W, advTxt, "r2 -Wrap +VScroll")
+    y += 50
+
+    tEmpty := AddToggle(d, "", 16, y, W, T("fd_empty"), canEmpty && (isEdit ? EmptyDirsFor(name) : true))
+    y += 26
+    AddTxt(d, "", Format("x48 y{1} w{2} h34", y, W - 32), T(canEmpty ? "fd_empty_help" : "fd_empty_b2"), "s8 norm", TH["sub"], TH["bg"])
+    if !canEmpty {
+        tEmpty["box"].Enabled := false
+        tEmpty["lbl"].Enabled := false
+    }
+    y += 44
+
+    AddBtn(d, "", 16, y, 150, 34, T(isEdit ? "ex_save" : "fd_add"), (*) => Accept(), "prim", "s9 bold")
+    AddBtn(d, "", 174, y, 110, 34, T("cd_cancel"), (*) => d.Destroy())
+    y += 48
+
+    tv.OnEvent("ItemCheck", OnCheck)
+    if !isEdit
+        ePath.OnEvent("Change", PathChanged)
     d.OnEvent("Close", (*) => d.Destroy())
     d.OnEvent("Escape", (*) => d.Destroy())
-    UpdatePrev()
-    d.Show("w672")
+    if (preset != "" && !isCloud) {
+        SplitPath(preset, &leaf0)
+        leaf0 := RegExReplace(leaf0, "[^\w\-]", "_")
+        eName.Value := leaf0
+        st["auto"] := leaf0
+    }
+    UpdatePortable()
+    LoadTree()
+    d.Show("w" (W + 32) " h" y)
+}
+
+; Writes (or deletes) the exclusion rules file of a folder
+SaveExclusions(name, pats) {
+    f := ExcludeFile(name)
+    if (pats.Length = 0) {
+        try {
+            FileDelete(f)
+        }
+        return
+    }
+    DirCreate(AppDir "\exclude")
+    out := "# SyncDood exclusions for '" name "' (rclone syntax, one rule per line)`n"
+    for pt in pats
+        out .= pt "`n"
+    try {
+        FileDelete(f)
+    }
+    FileAppend(out, f, "UTF-8-RAW")
+}
+
+; ---- the exclusions tree ----------------------------------------------------------------------------
+ExcTreeMax() {
+    return 4000
+}
+
+; A rule that is just a path (/saves/slot1/ or /saves/a.sav) -> "saves/slot1/" (lower case); "" if it has wildcards
+ManagedRuleKey(line) {
+    if (SubStr(line, 1, 1) != "/")
+        return ""
+    s := SubStr(line, 2)
+    if RegExMatch(s, "(?<!\\)[*?\[\]{}]")
+        return ""
+    s := RegExReplace(s, "\\([*?\[\]{}!\\])", "$1")
+    return (s = "") ? "" : StrLower(s)
+}
+
+; Escapes the characters rclone treats as wildcards ([USA] -> \[USA\])
+EscapeGlob(s) {
+    return RegExReplace(s, "([*?\[\]{}])", "\$1")
+}
+
+; Fills the TreeView with what is inside dirPath (folders first, then files).
+; Items are checked (= synced) unless a rule excludes them; everything under an excluded folder is unchecked.
+ExcTreeFill(tv, nodes, dirPath, rel, parentId, parentOff, ctx) {
+    dirs := [], files := []
+    Loop Files dirPath "\*", "D"
+        dirs.Push(A_LoopFileName)
+    Loop Files dirPath "\*", "F"
+        files.Push(A_LoopFileName)
+    for kind in [1, 2] {
+        for nm in (kind = 1 ? dirs : files) {
+            if (ctx["count"] >= ctx["max"]) {
+                ctx["trunc"] := true
+                return
+            }
+            ctx["count"] += 1
+            r := (rel = "") ? nm : rel "/" nm
+            key := StrLower(r) (kind = 1 ? "/" : "")
+            off := parentOff
+            if ctx["managed"].Has(key) {
+                ctx["used"][key] := true
+                off := true
+            }
+            id := tv.Add(nm, parentId, (off ? "" : "Check") (kind = 1 ? ctx["iF"] : ctx["iD"]))
+            nodes[id] := [r, kind = 1, !off]
+            if (kind = 1)
+                ExcTreeFill(tv, nodes, dirPath "\" nm, r, id, off, ctx)
+        }
+    }
+}
+
+; An item was checked / unchecked by the user: everything inside follows it, and checking also re-checks its parents
+ExcTreeApply(tv, nodes, item, on) {
+    nodes[item][3] := on
+    ExcTreeDown(tv, nodes, item, on)
+    if on {
+        p := tv.GetParent(item)
+        while p {
+            if !nodes[p][3] {
+                nodes[p][3] := true
+                tv.Modify(p, "Check")
+            }
+            p := tv.GetParent(p)
+        }
+    }
+}
+
+ExcTreeDown(tv, nodes, id, on) {
+    c := tv.GetChild(id)
+    while c {
+        if (nodes[c][3] != on) {
+            nodes[c][3] := on
+            tv.Modify(c, on ? "Check" : "-Check")
+        }
+        ExcTreeDown(tv, nodes, c, on)
+        c := tv.GetNext(c)
+    }
+}
+
+; Rules for the unchecked items: a whole unchecked folder is one rule; inside a checked folder each unchecked item is
+ExcTreeRules(tv, nodes, out, id := 0) {
+    c := id ? tv.GetChild(id) : tv.GetNext()
+    while c {
+        nd := nodes[c]
+        if !tv.Get(c, "Check") {
+            out.Push("/" EscapeGlob(nd[1]) (nd[2] ? "/" : ""))
+        } else if nd[2] {
+            ExcTreeRules(tv, nodes, out, c)
+        }
+        c := tv.GetNext(c)
+    }
+    return out
+}
+
+; Does this folder also sync its empty sub-folders? (the default is what the cloud supports)
+EmptyDirsFor(name) {
+    v := IniRead(IniFile, "emptydirs", name, "")
+    if (v = "")
+        return KeepsEmptyDirs()
+    return (v = "1" && KeepsEmptyDirs())
+}
+
+; "Add from the cloud": folders that exist in the cloud but are not set up on this PC
+AddFromCloudUI(*) {
+    global CloudListFail
+    if CheckBusy()
+        return
+    CloudListFail := false
+    ToolTip(T("cf_looking"))
+    names := []
+    for nm in CloudLs(Remote, true) {
+        if (nm != "" && !ReservedName(nm) && !Folders.Has(nm))
+            names.Push(nm)
+    }
+    ToolTip()
+    if CloudListFail {
+        MsgBox(T("cf_fail"), "SyncDood", "Iconx")
+        return
+    }
+    if (names.Length = 0) {
+        MsgBox(T("cf_none"), "SyncDood", "Iconi")
+        return
+    }
+
+    d := Gui("+Owner" MainGui.Hwnd, T("cf_title"))
+    d.BackColor := TH["bg"]
+    d.MarginX := 16
+    d.MarginY := 14
+    d.SetFont("s9 norm", "Segoe UI")
+    AddTxt(d, "", "x16 y14 w440 h44", T("cf_help"), "s9 norm", TH["sub"], TH["bg"])
+    d.SetFont("s9 norm c" TH["text"], "Segoe UI")
+    lv := d.Add("ListView", Format("x16 y64 w440 h220 -Hdr -Multi -E0x200 c{1} Background{2}", TH["text"], TH["card"]), [T("f_col_name")])
+    for nm in names
+        lv.Add(, nm)
+    lv.ModifyCol(1, 410)
+    try {
+        DllCall("uxtheme\SetWindowTheme", "Ptr", lv.Hwnd, "Str", DarkNow ? "DarkMode_Explorer" : "Explorer", "Ptr", 0)
+    }
+
+    Pick(*) {
+        row := lv.GetNext(0)
+        if (row = 0) {
+            MsgBox(T("f_nosel"), "SyncDood", "Iconi")
+            return
+        }
+        chosen := lv.GetText(row, 1)
+        d.Destroy()
+        loc := SelectFolder(T("pick_cloud", chosen), "", MainGui.Hwnd)
+        if (loc = "")
+            return
+        FolderDialog("cloud", chosen, RTrim(loc, "\"))
+    }
+    AddBtn(d, "", 16, 300, 150, 34, T("cf_next"), Pick, "prim", "s9 bold")
+    AddBtn(d, "", 174, 300, 110, 34, T("cd_cancel"), (*) => d.Destroy())
+    lv.OnEvent("DoubleClick", Pick)
+    d.OnEvent("Close", (*) => d.Destroy())
+    d.OnEvent("Escape", (*) => d.Destroy())
+    d.Show("w472 h350")
+}
+
+; Pick the folder first, then the dialog with the rest of the options
+AddFolderUI(*) {
+    if CheckBusy()
+        return
+    p := SelectFolder(T("pick_add"), "", MainGui.Hwnd)
+    if (p = "")
+        return
+    FolderDialog("add", "", RTrim(p, "\"))
+}
+
+; Options of the selected folder (exclusions tree, empty folders)
+ExcludeUI(*) {
+    name := SelectedFolder()
+    if (name = "")
+        return
+    FolderDialog("edit", name)
 }
 
 ; true if path a is the same as b or inside it (case-insensitive)
@@ -5026,7 +5676,7 @@ SaveFolders() {
         IniDelete(IniFile, "folders")
     }
     for nm, p in Folders
-        IniWrite(p, IniFile, "folders", nm)
+        IniWrite(FolderRaw.Get(nm, p), IniFile, "folders", nm)
 }
 
 ; Applies a settings change: restarts SyncDood and re-opens the window on the given page
@@ -5034,44 +5684,6 @@ RestartApp(page := 4) {
     SaveHistory()
     IniWrite(page, IniFile, "general", "reopenUI")
     Reload()
-}
-
-AddFolderUI(*) {
-    if CheckBusy()
-        return
-    p := SelectFolder(T("pick_add"), "", MainGui.Hwnd)
-    if (p = "")
-        return
-    p := RTrim(p, "\")
-    for n, ep in Folders {
-        if (StrLower(ep) = StrLower(p)) {
-            MsgBox(T("f_dup_path"), "SyncDood", "Iconx")
-            return
-        }
-    }
-    SplitPath(p, &nm)
-    nm := RegExReplace(nm, "[^\w\-]", "_")
-    ib := InputBox(T("f_nameprompt"), "SyncDood", "w380 h170", nm)
-    if (ib.Result != "OK" || Trim(ib.Value) = "")
-        return
-    nm := RegExReplace(Trim(ib.Value), "[^\w\-]", "_")
-    for n in Folders {
-        if (StrLower(n) = StrLower(nm)) {
-            MsgBox(T("f_dup_name"), "SyncDood", "Iconx")
-            return
-        }
-    }
-    if ReservedName(nm) {
-        MsgBox(T("f_reserved"), "SyncDood", "Iconx")
-        return
-    }
-    if (PathInside(BackupDir, p) || PathInside(p, BackupDir)) {
-        MsgBox(T("f_inside_backup", BackupDir), "SyncDood", "Iconx")
-        return
-    }
-    Folders[nm] := p
-    SaveFolders()
-    RestartApp(PG_FOLDERS)
 }
 
 ChangeFolderUI(*) {
@@ -5096,7 +5708,12 @@ ChangeFolderUI(*) {
     }
     if (MsgBox(T("f_change_confirm", name, p), "SyncDood", "YesNo Icon?") != "Yes")
         return
+    raw := p
+    port := PortablePath(p)
+    if (port != "" && MsgBox(T("f_portable_ask", port), "SyncDood", "YesNo Icon?") = "Yes")
+        raw := port
     Folders[name] := p
+    FolderRaw[name] := raw
     SaveFolders()
     ForgetFolder(name)            ; the new path needs its own first sync
     RestartApp(PG_FOLDERS)
@@ -5115,8 +5732,12 @@ RemoveFolderUI(*) {
     if (MsgBox(T("f_remove_confirm", name), "SyncDood", "YesNo Icon?") != "Yes")
         return
     Folders.Delete(name)
+    FolderRaw.Delete(name)
     SaveFolders()
     ForgetFolder(name)
+    try {
+        IniDelete(IniFile, "emptydirs", name)
+    }
     RestartApp(PG_FOLDERS)
 }
 
@@ -5353,49 +5974,6 @@ RcloneRemoteDelete(name) {
     }
 }
 
-; ---- only the old SaveSync leftovers ----
-CleanOldUI(*) {
-    if CheckBusy()
-        return
-    lines := ""
-    hasDir := (DirExist(OldAppDir) != "")
-    hasLink := FileExist(OldLink)
-    names := RemoteNames()
-    hasRemote := InStr("`n" names, "`nsavesync:")
-    inUse := RegExMatch(Remote, "i)^savesync:")
-    cache := FindBisyncFiles(["*..savesync_*"])
-    if hasDir
-        lines .= T("cl_dir", OldAppDir) "`n"
-    if hasLink
-        lines .= T("cl_link") "`n"
-    if hasRemote
-        lines .= (inUse ? T("cl_inuse") : T("cl_remote")) "`n"
-    if (cache.Length > 0 && !inUse)
-        lines .= T("cl_cache", cache.Length) "`n"
-    if (lines = "" || (inUse && !hasDir && !hasLink)) {
-        MsgBox(T("cl_none"), "SyncDood", "Iconi")
-        return
-    }
-    if (MsgBox(T("cl_intro", lines), "SyncDood", "YesNo Icon?") != "Yes")
-        return
-    if hasLink {
-        try {
-            FileDelete(OldLink)
-        }
-    }
-    if hasDir {
-        try {
-            DirDelete(OldAppDir, true)
-        }
-    }
-    if (!inUse) {
-        if hasRemote
-            RcloneRemoteDelete("savesync")
-        DeleteFiles(cache)
-    }
-    MsgBox(T("cl_done"), "SyncDood", "Iconi")
-}
-
 ; ---- full uninstall ----
 UninstallUI(*) {
     if CheckBusy()
@@ -5420,7 +5998,7 @@ UninstallUI(*) {
     SetTimer(WatchRA, 0)
 
     ; startup shortcuts
-    for lnk in [StartupLink, OldLink] {
+    for lnk in [StartupLink, A_Startup "\RSY.lnk", A_Startup "\SaveSync.lnk"] {
         try {
             FileDelete(lnk)
         }
@@ -5439,7 +6017,7 @@ UninstallUI(*) {
     DeleteFiles(FindBisyncFiles(pats))
 
     ; settings, history, log, bin ...  (backups kept if asked)
-    for dir in [AppDir, OldAppDir] {
+    for dir in [AppDir, EnvGet("LOCALAPPDATA") "\RSY", EnvGet("LOCALAPPDATA") "\SaveSync"] {
         if !DirExist(dir)
             continue
         if (keepBackups && dir = AppDir) {
