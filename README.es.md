@@ -2,12 +2,6 @@
   <a href="README.md">English</a> · <b>Español</b>
 </p>
 
-<p align="center">
-  <img src="icons/syncing.png" width="96" alt="SyncDood sincronizando">
-  <img src="icons/ok.png" width="96" alt="SyncDood al día">
-  <img src="icons/error.png" width="96" alt="SyncDood con error">
-</p>
-
 # 🎮 SyncDood — tus partidas y states, iguales en todas tus PCs
 
 > **Versión 0.1** · 🌍 Se adapta al idioma de Windows (español / inglés)
