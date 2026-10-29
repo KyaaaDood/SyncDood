@@ -227,7 +227,11 @@ Besides that, everything a sync **deletes or overwrites** is backed up **per day
 
 ## 🔄 Updates
 
-SyncDood checks the GitHub *Releases* (`kyaaadood/SyncDood`) in the background, at most once a day, and silently if nothing is new. You can also use *Check for updates* in the tray menu or *About*. If there's a newer version it offers the download page. Turn it off in *Options*.
+SyncDood checks the GitHub *Releases* (`kyaaadood/SyncDood`) in the background, at most once a day, and silently if nothing is new. You can also use *Check for updates* in the tray menu or *About*. If there's a newer version it offers to **install it by itself**: SyncDood closes for a moment, downloads the new version, replaces its files, opens again and tells you it was updated. Your settings, history and backups stay as they are. Turn the check off in *Options*.
+
+- With the single **`SyncDood.exe`** it downloads the release's `.exe`. With the loose script (`Install.bat`) it downloads the release's `.zip` and copies it over the program folder (your `rclone.exe` and portable AutoHotkey are kept).
+- If the release has nothing installable it just opens the download page. If the program lives in a protected folder (such as *Program Files*), Windows may refuse to replace the files; move it to a normal folder or update by hand.
+- It needs Windows 10 or newer (it uses the built-in `tar` to unpack the zip).
 
 <details>
 <summary>🏷️ <b>Publishing a new version</b> (for the developer)</summary>
@@ -235,7 +239,7 @@ SyncDood checks the GitHub *Releases* (`kyaaadood/SyncDood`) in the background, 
 The version lives in **one place**: the `AppVersion` line at the top of `SyncDood.ahk` (now `"0.2.1"`).
 
 1. Change `AppVersion` (e.g. `"0.2.1"`).
-2. Create a GitHub *Release* in `kyaaadood/SyncDood` with the same number and a leading `v` (`v0.2.1`).
+2. Create a GitHub *Release* in `kyaaadood/SyncDood` with the same number and a leading `v` (`v0.2.1`), and **attach the files the updater installs**: `SyncDood.exe` (from `dist\` after `Build.bat`) for the single-file version, and a `.zip` with the `SyncDood` folder (without `rclone.exe` or `ahk\`) for the loose-script version. Without a `.zip`, GitHub's automatic source zip is used.
 3. Running copies compare that tag with their `AppVersion` and offer the download if the tag is newer.
 
 `Build.bat` also reads `AppVersion` and writes it into `SyncDood.exe`'s properties.

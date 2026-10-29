@@ -227,7 +227,11 @@ Además, todo lo que la sync **borra o sobrescribe** se respalda **por día**, e
 
 ## 🔄 Actualizaciones
 
-SyncDood consulta las *Releases* de GitHub (`kyaaadood/SyncDood`) en segundo plano, como máximo una vez al día y sin avisar si no hay nada nuevo. También puedes usar *Buscar actualizaciones* en el menú de la bandeja o en *Acerca de*. Si hay una versión más nueva, ofrece abrir la página de descarga. Se desactiva en *Opciones*.
+SyncDood consulta las *Releases* de GitHub (`kyaaadood/SyncDood`) en segundo plano, como máximo una vez al día y sin avisar si no hay nada nuevo. También puedes usar *Buscar actualizaciones* en el menú de la bandeja o en *Acerca de*. Si hay una versión más nueva, ofrece **instalarla sola**: SyncDood se cierra un momento, descarga la versión nueva, reemplaza sus archivos, se abre otra vez y te avisa que se actualizó. Tus ajustes, historial y respaldos se quedan como están. La revisión se desactiva en *Opciones*.
+
+- Con el **`SyncDood.exe`** único descarga el `.exe` de la release. Con el script suelto (`Install.bat`) descarga el `.zip` de la release y lo copia sobre la carpeta del programa (tu `rclone.exe` y el AutoHotkey portátil se conservan).
+- Si la release no trae nada instalable, solo abre la página de descarga. Si el programa está en una carpeta protegida (como *Archivos de programa*), Windows puede negarse a reemplazar los archivos: muévelo a una carpeta normal o actualiza a mano.
+- Requiere Windows 10 o posterior (usa el `tar` incluido para abrir el zip).
 
 <details>
 <summary>🏷️ <b>Publicar una versión nueva</b> (para quien desarrolla)</summary>
@@ -235,7 +239,7 @@ SyncDood consulta las *Releases* de GitHub (`kyaaadood/SyncDood`) en segundo pla
 La versión vive en **un solo lugar**: la línea `AppVersion` al inicio de `SyncDood.ahk` (ahora `"0.2.1"`).
 
 1. Cambia `AppVersion` (p. ej. `"0.2.1"`).
-2. Crea una *Release* en GitHub en `kyaaadood/SyncDood` con el mismo número y una `v` delante (`v0.2.1`).
+2. Crea una *Release* en GitHub en `kyaaadood/SyncDood` con el mismo número y una `v` delante (`v0.2.1`), y **adjunta los archivos que instala el actualizador**: `SyncDood.exe` (de `dist\` tras `Build.bat`) para la versión de un solo archivo, y un `.zip` con la carpeta `SyncDood` (sin `rclone.exe` ni `ahk\`) para la versión de script suelto. Sin `.zip`, se usa el zip automático de GitHub.
 3. Las copias en uso comparan esa etiqueta con su `AppVersion` y ofrecen la descarga si la etiqueta es más nueva.
 
 `Build.bat` también lee `AppVersion` y la escribe en las propiedades de `SyncDood.exe`.

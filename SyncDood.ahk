@@ -276,6 +276,7 @@ if (WatchProc != "")
     SetTimer(WatchRA, 30000)                           ; detects when you close the emulator
 if CheckUpd
     SetTimer(AutoUpdateCheck, -25000)                  ; silent, at most once a day
+CheckPostUpdate()                                      ; "SyncDood was updated to version X" after a self-update
 OnMessage(0x218, OnPower)                              ; WM_POWERBROADCAST (sleep/resume)
 
 ; Re-open the window after a restart caused by a settings change
@@ -785,6 +786,11 @@ BuildStrings() {
         , "ab_check", "Check for updates"
         , "ab_libs_plain", "Uses rclone (MIT) and AutoHotkey v2 (GPLv2)."
         , "upd_new", "A new version is available: {1} (you have {2}).`n`nOpen the download page?"
+        , "upd_self", "A new version is available: {1} (you have {2}).`n`nUpdate now? SyncDood will close for a moment, install the new version and open again by itself."
+        , "upd_downloading", "Downloading the update…"
+        , "upd_dl_fail", "Couldn't download the update (code {1})."
+        , "upd_inst_fail", "Couldn't install the update: {1}"
+        , "upd_done", "SyncDood was updated to version {1}."
         , "upd_none", "You are up to date (version {1})."
         , "upd_noreleases", "No published releases found yet."
         , "upd_error", "Could not check for updates. Check your internet connection."
@@ -1256,6 +1262,11 @@ BuildStrings() {
         , "ab_check", "Buscar actualizaciones"
         , "ab_libs_plain", "Usa rclone (MIT) y AutoHotkey v2 (GPLv2)."
         , "upd_new", "Hay una versión nueva: {1} (tienes la {2}).`n`n¿Abrir la página de descarga?"
+        , "upd_self", "Hay una versión nueva: {1} (tienes la {2}).`n`n¿Actualizar ahora? SyncDood se cerrará un momento, instalará la versión nueva y se abrirá solo."
+        , "upd_downloading", "Descargando la actualización…"
+        , "upd_dl_fail", "No se pudo descargar la actualización (código {1})."
+        , "upd_inst_fail", "No se pudo instalar la actualización: {1}"
+        , "upd_done", "SyncDood se actualizó a la versión {1}."
         , "upd_none", "Estás al día (versión {1})."
         , "upd_noreleases", "Todavía no hay versiones publicadas."
         , "upd_error", "No se pudo buscar actualizaciones. Revisa tu conexión a internet."
@@ -3207,8 +3218,19 @@ FetchLatest() {
         whr.Send()
         if (whr.Status = 404)
             return Map("none", true)
-        if (whr.Status = 200 && RegExMatch(whr.ResponseText, '"tag_name"\s*:\s*"([^"]+)"', &m))
-            return Map("tag", m[1])
+        if (whr.Status = 200 && RegExMatch(whr.ResponseText, '"tag_name"\s*:\s*"([^"]+)"', &m)) {
+            json := whr.ResponseText
+            assets := []
+            pos := 1
+            while RegExMatch(json, '"browser_download_url"\s*:\s*"([^"]+)"', &am, pos) {
+                assets.Push(StrReplace(am[1], "\/", "/"))
+                pos := am.Pos + am.Len
+            }
+            zipball := ""
+            if RegExMatch(json, '"zipball_url"\s*:\s*"([^"]+)"', &zm)
+                zipball := StrReplace(zm[1], "\/", "/")
+            return Map("tag", m[1], "assets", assets, "zip", zipball)
+        }
     }
     return ""
 }
@@ -3248,10 +3270,151 @@ CheckUpdates(manual := false) {
     }
     tag := r["tag"]
     if VerNewer(tag, AppVersion) {
-        if (MsgBox(T("upd_new", tag, AppVersion), "SyncDood", "YesNo Iconi") = "Yes")
-            Run("https://github.com/" GithubRepo "/releases/latest")
+        url := UpdateAssetUrl(r)
+        if (url = "") {
+            ; nothing we can install by ourselves (no .exe / .zip in the release): open the download page
+            if (MsgBox(T("upd_new", tag, AppVersion), "SyncDood", "YesNo Iconi") = "Yes")
+                Run("https://github.com/" GithubRepo "/releases/latest")
+            return
+        }
+        if (MsgBox(T("upd_self", tag, AppVersion), "SyncDood", "YesNo Iconi") = "Yes") {
+            if CheckBusy()
+                return
+            SelfUpdate(url, tag)
+        }
     } else if manual {
         MsgBox(T("upd_none", AppVersion), "SyncDood", "Iconi")
+    }
+}
+
+; What to install for this copy of SyncDood: the .exe asset when running the single .exe, otherwise the .zip asset
+; (or, if the release has none, GitHub's own source zip). "" = nothing installable.
+UpdateAssetUrl(r) {
+    want := A_IsCompiled ? ".exe" : ".zip"
+    first := ""
+    for u in r["assets"] {
+        if (SubStr(StrLower(u), -StrLen(want)) != want)
+            continue
+        if InStr(StrLower(u), "syncdood")
+            return u
+        if (first = "")
+            first := u
+    }
+    if (first != "")
+        return first
+    return A_IsCompiled ? "" : r["zip"]
+}
+
+; Downloads url to dest. Returns the HTTP status (200 = ok).
+DownloadFile(url, dest) {
+    whr := ComObject("WinHttp.WinHttpRequest.5.1")
+    whr.SetTimeouts(10000, 10000, 30000, 180000)
+    whr.Open("GET", url, false)
+    whr.SetRequestHeader("User-Agent", "SyncDood-updater")
+    whr.Send()
+    if (whr.Status != 200)
+        return whr.Status
+    stream := ComObject("ADODB.Stream")
+    stream.Type := 1                  ; binary
+    stream.Open()
+    stream.Write(whr.ResponseBody)
+    stream.SaveToFile(dest, 2)        ; 2 = overwrite
+    stream.Close()
+    return 200
+}
+
+; Installs the update by itself, like a normal app:
+;  - single SyncDood.exe: downloads the new .exe and swaps it in;
+;  - loose script (Install.bat): downloads the release .zip, unpacks it and copies the files over the program
+;    folder (rclone.exe and the portable AutoHotkey that Install.bat downloaded are not in the zip, so they stay).
+; Windows can't replace files that are in use, so a small helper .bat waits for this process to exit, copies the
+; new files, opens SyncDood again (with /updated:<version> to show a notice) and deletes itself.
+; Your settings, history and backups live in %LOCALAPPDATA%\SyncDood and are never touched.
+SelfUpdate(url, tag) {
+    ver := RegExReplace(tag, "i)^v")
+    base := A_Temp "\SyncDood_update_" A_TickCount
+    bat := base ".bat"
+    pid := ProcessExist()
+    ToolTip(T("upd_downloading"))
+    try {
+        if A_IsCompiled {
+            dl := base ".exe"
+            code := DownloadFile(url, dl)
+            ToolTip()
+            if (code != 200 || FileGetSize(dl) < 500000) {
+                MsgBox(T("upd_dl_fail", code), "SyncDood", "Iconx")
+                return
+            }
+            cur := A_ScriptFullPath
+            lines := ["@echo off", "chcp 65001 >nul", "set n=0", ":mv"
+                , 'move /y "' BatEsc(dl) '" "' BatEsc(cur) '" >nul 2>&1'
+                , "if not errorlevel 1 goto done", "set /a n+=1", "if %n% GTR 40 goto done"
+                , "timeout /t 1 /nobreak >nul", "goto mv", ":done"
+                , 'start "" "' BatEsc(cur) '" /updated:' ver
+                , 'del "%~f0"']
+            startAt := 4                     ; the wait-for-exit block goes before ":mv"
+        } else {
+            dl := base ".zip"
+            code := DownloadFile(url, dl)
+            if (code != 200 || FileGetSize(dl) < 1000) {
+                ToolTip()
+                MsgBox(T("upd_dl_fail", code), "SyncDood", "Iconx")
+                return
+            }
+            ex := base
+            DirCreate(ex)
+            RunWait(Format('{1} /c ""{2}\System32\tar.exe" -xf "{3}" -C "{4}""', A_ComSpec, A_WinDir, dl, ex), , "Hide")
+            ToolTip()
+            src := ""
+            Loop Files ex "\SyncDood.ahk", "FR" {
+                src := A_LoopFileDir
+                break
+            }
+            if (src = "")
+                throw Error("SyncDood.ahk not found in the downloaded file")
+            lines := ["@echo off", "chcp 65001 >nul", "set n=0", ":cp"
+                , 'xcopy "' BatEsc(src) '\*" "' BatEsc(A_ScriptDir) '\" /e /y /i /q >nul 2>&1'
+                , "if not errorlevel 1 goto done", "set /a n+=1", "if %n% GTR 40 goto done"
+                , "timeout /t 1 /nobreak >nul", "goto cp", ":done"
+                , 'start "" "' BatEsc(A_AhkPath) '" "' BatEsc(A_ScriptFullPath) '" /updated:' ver
+                , 'rd /s /q "' BatEsc(ex) '" >nul 2>&1'
+                , 'del "' BatEsc(dl) '" >nul 2>&1'
+                , 'del "%~f0"']
+            startAt := 4
+        }
+        ; wait until this process has really exited
+        wait := [":wait", Format('tasklist /fi "PID eq {1}" 2>nul | find "{1}" >nul', pid)
+            , "if not errorlevel 1 (", "  timeout /t 1 /nobreak >nul", "  goto wait", ")"]
+        out := ""
+        for i, ln in lines {
+            if (i = startAt) {
+                for w in wait
+                    out .= w "`r`n"
+            }
+            out .= ln "`r`n"
+        }
+        FileAppend(out, bat, "UTF-8-RAW")
+        Run('"' bat '"', , "Hide")
+        ExitApp()
+    } catch as e {
+        ToolTip()
+        MsgBox(T("upd_inst_fail", e.Message), "SyncDood", "Iconx")
+    }
+}
+
+; Escapes a path for a .bat file (a % would be read as a variable)
+BatEsc(p) {
+    return StrReplace(p, "%", "%%")
+}
+
+; After a self-update the new copy starts with /updated:<version>: tell the user it worked
+CheckPostUpdate() {
+    for arg in A_Args {
+        if (InStr(arg, "/updated:") = 1) {
+            v := SubStr(arg, StrLen("/updated:") + 1)
+            SetTimer(() => TrayTip(T("upd_done", v), "SyncDood"), -2500)
+            return
+        }
     }
 }
 
