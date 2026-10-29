@@ -9,7 +9,7 @@
 ; Everything (folders, cloud, options) is editable from the app window; no need to
 ; touch config.ini.
 ;
-; Icons:  icons\syncing.ico (blue) | icons\ok.ico (green) | icons\error.ico (red) | icons\conflict.ico (amber, blinks with red)
+; Icons:  icons\syncing.ico (blue) | icons\ok.ico (green) | icons\error.ico (red) | icons\conflict.ico (amber: conflicts to review)
 ; Config and data: %LOCALAPPDATA%\SyncDood\  (config.ini, sync.log, data\)
 ; ============================================================================
 #Requires AutoHotkey v2.0
@@ -20,7 +20,7 @@ SetWorkingDir(A_ScriptDir)
 ;@Ahk2Exe-SetName SyncDood
 ;@Ahk2Exe-SetDescription SyncDood - Save sync
 ;@Ahk2Exe-SetCopyright KyaaaDood
-;@Ahk2Exe-SetVersion 0.2.0.0
+;@Ahk2Exe-SetVersion 0.2.1.0
 
 ; ---------------------------------------------------------------- Paths -----
 AppDir      := EnvGet("LOCALAPPDATA") "\SyncDood"
@@ -28,13 +28,14 @@ IniFile     := AppDir "\config.ini"
 LogFile     := AppDir "\sync.log"
 DataDir     := AppDir "\data"
 HistFile    := DataDir "\history.tsv"
+ConfFile    := DataDir "\conflicts.tsv"
 IconDir     := A_ScriptDir "\icons"
 StartupLink := A_Startup "\SyncDood.lnk"
 RemoteName  := "syncdood"     ; name of the rclone remote created by the wizard
 
 ; ---- Project info (shown in the About tab) ----------------------------------
-; >>> THE VERSION LIVES HERE. Keep it equal to your GitHub release tag (v0.2). <<<
-AppVersion  := "0.2"
+; >>> THE VERSION LIVES HERE. Keep it equal to your GitHub release tag (v0.2.1). <<<
+AppVersion  := "0.2.1"
 AppAuthor   := "KyaaaDood"
 GithubRepo  := "kyaaadood/SyncDood"     ; "user/repo" (also used by the update checker)
 GithubUrl   := "https://github.com/kyaaadood"       ; author page (About tab and tray menu)
@@ -107,6 +108,11 @@ PauseRun    := (IniRead(IniFile, "general", "pauseWhileRunning", "1") = "1")
 ThemePref   := StrLower(Trim(IniRead(IniFile, "general", "theme", "auto")))      ; auto | light | dark
 SettleSec   := Integer(IniRead(IniFile, "general", "settleSec", "10"))          ; wait for files still being written
 LastTrimTick := 0
+PauseUntil  := IniRead(IniFile, "state", "pauseUntil", "")     ; "" | "forever" | yyyyMMddHHmmss (user pause)
+CapUntil    := IniRead(IniFile, "state", "capUntil", "")       ; "" | yyyyMMddHHmmss (the cloud refused: limit reached)
+LastCapWait := ""         ; set by SyncFolder when a sync stopped because of a cloud limit
+CapName     := ""         ; folder that hit the limit
+PauseMenu   := ""
 PcName := RegExReplace(Trim(IniRead(IniFile, "general", "pcName", "")), '[\\/:*?"<>|]', "_")
 if (PcName = "")
     PcName := RegExReplace(A_ComputerName, '[\\/:*?"<>|]', "_")     ; shown as the origin of your saves
@@ -178,7 +184,9 @@ if (oldNF != "") {
 ; ---------------------------------------------------------------- State ------
 Syncing         := false
 Retries         := 0
-ConflictPending := false
+Conflicts       := []     ; conflict notices: Map(ts, folder, rel, status = pending|kept|swapped, loser, dir, done)
+ConfRows        := []     ; the ones shown in the Conflicts list
+ConfLV          := ""
 LastState       := "syncing"
 LastTip         := ""
 TipKind         := ""
@@ -203,18 +211,19 @@ EvMap := Map("up", T("ev_up"), "down", T("ev_down")
 
 ; ---- window / theme state (the window itself is built in BuildMain)
 SW := 200, CX := 228, CW0 := 724, W0 := 980, H0 := 680          ; sidebar width, content x / width, design size
-PG_STATUS := 1, PG_HIST := 2, PG_GAMES := 3, PG_FOLDERS := 4, PG_CLOUD := 5, PG_OPT := 6, PG_ABOUT := 7
+PG_STATUS := 1, PG_HIST := 2, PG_CONF := 3, PG_GAMES := 4, PG_FOLDERS := 5, PG_CLOUD := 6, PG_OPT := 7, PG_ABOUT := 8
 TH := Map(), UI := Map(), Hov := Map(), FS := Map(), OptC := Map()
 Nav := [], PgCtrls := [], HistKeys := []
 HovCur := 0, HoverHooked := false, MainBuilt := false, CurPage := 1
 DarkNow := false, BannerCol := "2154A3", IconFont := "", HistFilterName := ""
 SyncTotal := 0, SyncIdx := 0, SyncName := ""
-NextCheck := 0, FlashOn := false, FlashPhase := 0, SyncWaiting := false
+NextCheck := 0, SyncWaiting := false
 FState := Map()       ; per folder: Map(st = wait|pending|syncing|ok|conflict|error, when, msg)
 for name in Folders
     FState[name] := Map("st", IsFirstDone(name) ? "wait" : "pending", "when", "", "msg", "")
 
 LoadHistory()
+LoadConflicts()
 
 FirstPath := ""
 for name, path in Folders {
@@ -227,6 +236,12 @@ A_TrayMenu.Delete()
 A_TrayMenu.Add(T("menu_open"), MenuOpen)
 A_TrayMenu.Default := T("menu_open")
 A_TrayMenu.Add(T("menu_sync"), MenuSyncNow)
+PauseMenu := Menu()
+PauseMenu.Add(T("pause_1h"), (*) => PauseFor(60))
+PauseMenu.Add(T("pause_4h"), (*) => PauseFor(240))
+PauseMenu.Add(T("pause_forever"), (*) => SetPause("forever"))
+A_TrayMenu.Add(T("menu_pause"), PauseMenu)
+A_TrayMenu.Add(T("menu_resume"), ResumeNow)
 A_TrayMenu.Add()
 A_TrayMenu.Add(T("menu_open_saves"), MenuOpenFolder)
 A_TrayMenu.Add(T("menu_open_backups"), MenuOpenBackup)
@@ -243,6 +258,13 @@ if FileExist(StartupLink)
     A_TrayMenu.Check(T("menu_startup"))
 
 SetState("syncing", T("tip_starting"))
+if IsPaused() {
+    if (PauseUntil != "forever")
+        SetTimer(PauseExpired, -Max(1000, DateDiff(PauseUntil, A_Now, "Seconds") * 1000))
+}
+if CapActive()
+    SetTimer(CapExpired, -Max(1000, DateDiff(CapUntil, A_Now, "Seconds") * 1000))
+UpdatePauseMenu()
 
 ; ------------------------------------------------------------- Triggers -----
 SetTimer(StartupSync, AnyPending() ? -3000 : -15000)   ; after launch (network should be up)
@@ -316,8 +338,8 @@ BuildStrings() {
         , "tip_syncing", "Syncing ({1})…"
         , "tip_fail_retry", "Failed: {1}- retrying in 45 s"
         , "tip_fail", "Failed: {1}- check sync.log"
-        , "tip_conflict", "Conflict: the losing copy was backed up. Check it in History"
-        , "tip_conflict_seen", "Conflict reviewed"
+        , "tip_conflict", "{1} conflict(s) to review. Nothing is lost: the other copy was saved"
+        , "tip_conflict_seen", "Conflicts reviewed"
         , "tip_ok", "Synced {1}  (↑{2} ↓{3})"
         , "reason_start", "startup"
         , "reason_periodic", "periodic"
@@ -456,6 +478,31 @@ BuildStrings() {
         , "v_col_origin", "Origin"
         , "un_program_dir", "Also delete SyncDood's program files?`n`n{1}`n`nOnly SyncDood's own files are removed (the program, icons, rclone.exe and the readme files). Anything else in that folder is left alone."
         , "tab_history", "History"
+        , "tab_conflicts", "Conflicts"
+        , "cf_help", "When the same file changes on two PCs before they sync, SyncDood keeps the newest one and saves the other copy. Nothing is lost: come here only when you want to compare them and choose."
+        , "cf_none", "✓ No conflicts to review."
+        , "cf_col_state", "Status"
+        , "cf_pending", "⚠ To review"
+        , "cf_kept", "Kept the one in use"
+        , "cf_swapped", "Used the other one"
+        , "cf_all", "Mark all as reviewed"
+        , "cf_cur", "In use (your folder)"
+        , "cf_oth", "Other version (saved copy)"
+        , "cf_size", "Size: {1}"
+        , "cf_date", "Date: {1}"
+        , "cf_origin", "From: {1}"
+        , "cf_newer", "● Newer"
+        , "cf_older", "● Older"
+        , "cf_missing", "The file is not there"
+        , "cf_nofile", "Plain file: no preview"
+        , "cf_keep", "Keep the one in use"
+        , "cf_use", "Use the other one"
+        , "cf_compare", "Compare screenshots"
+        , "cf_pick", "Pick a conflict from the list to see both versions."
+        , "cf_foot", "The other copy stays in your backups (days set in Options). Save-state copies are never deleted automatically."
+        , "cf_confirm_use", "Use the other version of this file?`n`n{1}`n`nThe one in use now is saved in the backups first, and the other one will sync to your other PCs on the next sync."
+        , "cf_confirm_all", "Mark {1} conflict(s) as reviewed and keep the versions in use?`n`nThe other copies stay in the backups."
+        , "btn_cf_review", "Review"
         , "tab_folders", "Folders"
         , "tab_cloud", "Cloud"
         , "tab_options", "Options"
@@ -528,7 +575,7 @@ BuildStrings() {
         , "st_waiting", "Waiting for files in {1} to finish being written…"
         , "st_title_ok", "Everything is up to date"
         , "st_title_syncing", "Syncing…"
-        , "st_title_conflict", "There is a conflict"
+        , "st_title_conflict", "Conflicts to review"
         , "st_title_error", "Could not sync"
         , "st_side_ok", "Up to date"
         , "st_side_syncing", "Syncing…"
@@ -547,6 +594,52 @@ BuildStrings() {
         , "st_progress", "Syncing {1} ({2} of {3})…"
         , "st_next", "Next automatic check: {1}"
         , "st_paused", "Automatic sync is paused while {1} is open (it syncs when you close it)."
+        , "pv_title", "First sync"
+        , "pv_wait", "Checking {1}…"
+        , "pv_body", "First sync of '{1}'.`n`nThis PC ({2}): {3} files, {4}`nCloud: {5} files, {6}`n`nWhat will happen: {7}`n`nContinue?"
+        , "o_export", "Export settings…"
+        , "o_import", "Import settings…"
+        , "cfg_export_title", "Save SyncDood settings"
+        , "cfg_import_title", "Choose the SyncDood settings file"
+        , "cfg_exported", "Settings saved to:`n{1}`n`nIt has your folders (with portable paths), exclusions and options. It does not include cloud passwords or tokens: connect the cloud on the other PC from the Cloud tab."
+        , "cfg_fail", "Could not save the file: {1}"
+        , "cfg_bad", "That file is not a SyncDood settings file."
+        , "cfg_replace", "replaces the one here"
+        , "cfg_import_ask", "Import {1} folders?{2}`n`nSyncDood restarts and each folder does a first sync (with preview) before syncing normally."
+        , "sp_btn", "Space by folder…"
+        , "sp_title", "Space by folder"
+        , "sp_help", "How much each folder takes on this PC, in the cloud and in the backups."
+        , "sp_pc", "This PC"
+        , "sp_cloud", "Cloud"
+        , "sp_bk_cloud", "Cloud backups"
+        , "sp_bk_pc", "Local backups"
+        , "sp_total", "Total"
+        , "sp_close", "Close"
+        , "menu_pause", "Pause sync"
+        , "menu_resume", "Resume sync"
+        , "pause_1h", "For 1 hour"
+        , "pause_4h", "For 4 hours"
+        , "pause_forever", "Until I resume it"
+        , "btn_pause", "Pause"
+        , "btn_resume", "Resume"
+        , "st_paused_manual", "Sync is paused. Press Resume when you want it to continue."
+        , "st_paused_until", "Sync is paused until {1}."
+        , "tip_paused", "Sync paused"
+        , "reason_resume_pause", "resuming after pause"
+        , "reason_resume_cap", "cloud limit lifted"
+        , "fail_cap", "The cloud daily limit was reached"
+        , "tip_cap", "Cloud limit reached. SyncDood will retry on its own at {1}."
+        , "hist_cap", "Cloud limit reached; retrying at {1}"
+        , "st_cap", "The cloud reached its daily limit. SyncDood will retry on its own at {1}."
+        , "cap_still", "The cloud's daily limit was reached and it should be lifted at {1}.`n`nSync now anyway?"
+        , "st_cloud", "Cloud: {1}"
+        , "c_app_of", "Folder of {1}"
+        , "c_space_btn", "Check space"
+        , "c_space_wait", "Checking space…"
+        , "c_space_used", "SyncDood uses {1} in the cloud ({2} files)."
+        , "c_space_acct", "Account: {1} used of {2} ({3} free)."
+        , "c_space_none", "This cloud does not report the free space of the account."
+        , "c_space_fail", "Could not read the cloud size. Check the connection."
         , "st_sync_folder", "Sync"
         , "f_sync_one", "Sync selected folder"
         , "seg_auto", "Auto"
@@ -614,17 +707,38 @@ BuildStrings() {
         , "fd_browse", "Browse…"
         , "fd_portable", "Save the path as {1} (it also works on PCs with another user name)"
         , "fd_tree", "What to sync"
-        , "fd_tree_help", "Uncheck what you do NOT want to sync (files or whole folders). Nothing is deleted."
+        , "fd_tree_help", "Only what is CHECKED will be synced: it is uploaded to your cloud and copied to your other PCs. Uncheck what you don't want to sync (nothing is deleted)."
+        , "fd_choose", "I only want to sync PART of this folder (choose files or folders)"
+        , "fd_simple", "Everything inside this folder ({2} items) will be synced to your cloud and your other PCs:`n{1}"
+        , "fd_simple_empty", "This folder is empty or doesn't exist yet. Whatever is inside will be synced to your cloud and your other PCs:`n{1}"
+        , "fd_tip_sub", "Tip: if you only need one subfolder, cancel and pick that subfolder directly."
+        , "fd_cloud_info", "In the cloud, '{1}' contains: {2}`nThese items will be placed directly INSIDE the folder chosen above."
+        , "fd_cloud_empty", "The cloud folder '{1}' looks empty (or it couldn't be read)."
+        , "fd_cloud_warn", "⚠ The cloud folder '{1}' already has a folder called '{2}' inside. With this path you would end up with '{2}\{2}'. Did you mean the folder above: {3}?"
+        , "fd_cloud_fix", "{1}`n`nThe cloud folder '{2}' already contains a folder called '{3}', so you would end up with:`n{1}\{3}`n`nYes = use the folder above ({4})`nNo = keep this path anyway`nCancel = go back"
+        , "fd_root_confirm", "That is a very general folder:`n{1}`n`nSyncDood would sync everything inside it unless you uncheck it. Usually you want the game's own folder. Continue anyway?"
+        , "fd_only", "Only sync what is checked (anything NEW that appears later is not synced)"
+        , "fd_only_help", "Use it when you want just a few files or folders out of a big folder. Without it, new files and folders are synced automatically."
+        , "fd_count_only", "ONLY the {1} checked item(s) will be synced. Anything new that appears later will NOT be synced."
+        , "fd_adv_off", "Extra rules (not used in this mode)"
+        , "fd_only_trunc", "This folder has too many items to list them all, and 'only sync what is checked' needs the full list.`n`nPick a subfolder instead, or turn that option off."
+        , "ex_only", "Only checked"
+        , "fd_checkall", "Check all"
+        , "fd_uncheckall", "Uncheck all"
+        , "fd_count", "{1} item(s) will be synced to the cloud  ·  {2} will NOT"
+        , "fd_none", "Nothing is checked, so nothing would be synced. Check what you want to sync."
+        , "fd_err_none", "Nothing is checked, so SyncDood would not sync anything.`n`nCheck at least the files or folders you want to sync."
         , "fd_tree_empty", "Nothing to show yet: the folder is empty or doesn't exist. You can still add rules below."
         , "fd_tree_trunc", "only the first {1} items are shown; use the rules below for the rest"
         , "fd_excluded", "{1} item(s) will NOT be synced"
-        , "fd_all_synced", "Everything will be synced"
+        , "fd_all_synced", "Everything ({1} items) will be synced to the cloud"
         , "fd_adv", "Extra rules (optional)"
         , "fd_empty", "Also sync empty folders (keep the folder structure)"
         , "fd_empty_help", "Turn it on if the game or emulator needs its folders to exist even when they are empty. They are created on your other PCs too."
         , "fd_empty_b2", "Your cloud (Backblaze B2) can't store empty folders."
         , "fd_add", "Add folder"
         , "fd_err_name", "Type a name for the folder."
+        , "fd_big_confirm", "This folder has thousands of files:`n{1}`n`nIs it really the one you want to sync? (For example, pick the game's own folder, not 'Documents'.)"
         , "fd_err_abs", "Choose a full folder path on this PC, like C:\Games\Saves."
         , "fd_create_ask", "That folder doesn't exist yet:`n{1}`n`nCreate it?"
         , "re_local", "If a file exists here and in the cloud, THIS PC's version wins."
@@ -695,8 +809,8 @@ BuildStrings() {
         , "tip_syncing", "Sincronizando ({1})…"
         , "tip_fail_retry", "Falló: {1}- reintentando en 45 s"
         , "tip_fail", "Falló: {1}- revisa sync.log"
-        , "tip_conflict", "Hubo conflicto: la copia perdedora se respaldó. Revísalo en el Historial"
-        , "tip_conflict_seen", "Conflicto revisado"
+        , "tip_conflict", "{1} conflicto(s) por revisar. No se pierde nada: la otra copia quedó guardada"
+        , "tip_conflict_seen", "Conflictos revisados"
         , "tip_ok", "Sincronizado {1}  (↑{2} ↓{3})"
         , "reason_start", "inicio"
         , "reason_periodic", "periódico"
@@ -835,6 +949,31 @@ BuildStrings() {
         , "v_col_origin", "Origen"
         , "un_program_dir", "¿Borrar también los archivos del programa SyncDood?`n`n{1}`n`nSolo se borran los archivos propios de SyncDood (el programa, los iconos, rclone.exe y los README). Todo lo demás que haya en esa carpeta no se toca."
         , "tab_history", "Historial"
+        , "tab_conflicts", "Conflictos"
+        , "cf_help", "Cuando el mismo archivo cambia en dos PCs antes de sincronizar, SyncDood se queda con el más nuevo y guarda la otra copia. No se pierde nada: entra aquí solo cuando quieras comparar y elegir."
+        , "cf_none", "✓ No hay conflictos por revisar."
+        , "cf_col_state", "Estado"
+        , "cf_pending", "⚠ Por revisar"
+        , "cf_kept", "Se conservó la que estaba"
+        , "cf_swapped", "Se usó la otra"
+        , "cf_all", "Marcar todos como revisados"
+        , "cf_cur", "En uso (tu carpeta)"
+        , "cf_oth", "Otra versión (copia guardada)"
+        , "cf_size", "Tamaño: {1}"
+        , "cf_date", "Fecha: {1}"
+        , "cf_origin", "De: {1}"
+        , "cf_newer", "● Más nueva"
+        , "cf_older", "● Más vieja"
+        , "cf_missing", "El archivo no está"
+        , "cf_nofile", "Archivo normal: sin vista previa"
+        , "cf_keep", "Conservar la que está"
+        , "cf_use", "Usar la otra"
+        , "cf_compare", "Comparar capturas"
+        , "cf_pick", "Elige un conflicto de la lista para ver las dos versiones."
+        , "cf_foot", "La otra copia queda en tus respaldos (los días se definen en Opciones). Las copias de states nunca se borran solas."
+        , "cf_confirm_use", "¿Usar la otra versión de este archivo?`n`n{1}`n`nLa que está en uso ahora se guarda primero en los respaldos, y la otra se sincronizará a tus demás PCs en la próxima sincronización."
+        , "cf_confirm_all", "¿Marcar {1} conflicto(s) como revisados y conservar las versiones en uso?`n`nLas otras copias se quedan en los respaldos."
+        , "btn_cf_review", "Revisar"
         , "tab_folders", "Carpetas"
         , "tab_cloud", "Nube"
         , "tab_options", "Opciones"
@@ -907,7 +1046,7 @@ BuildStrings() {
         , "st_waiting", "Esperando a que terminen de escribirse los archivos de {1}…"
         , "st_title_ok", "Todo al día"
         , "st_title_syncing", "Sincronizando…"
-        , "st_title_conflict", "Hay un conflicto"
+        , "st_title_conflict", "Conflictos por revisar"
         , "st_title_error", "No se pudo sincronizar"
         , "st_side_ok", "Al día"
         , "st_side_syncing", "Sincronizando…"
@@ -926,6 +1065,52 @@ BuildStrings() {
         , "st_progress", "Sincronizando {1} ({2} de {3})…"
         , "st_next", "Próxima revisión automática: {1}"
         , "st_paused", "Sincronización automática en pausa mientras {1} está abierto (se sincroniza al cerrarlo)."
+        , "pv_title", "Primera sincronización"
+        , "pv_wait", "Revisando {1}…"
+        , "pv_body", "Primera sincronización de '{1}'.`n`nEsta PC ({2}): {3} archivos, {4}`nNube: {5} archivos, {6}`n`nQué va a pasar: {7}`n`n¿Continuar?"
+        , "o_export", "Exportar ajustes…"
+        , "o_import", "Importar ajustes…"
+        , "cfg_export_title", "Guardar ajustes de SyncDood"
+        , "cfg_import_title", "Elige el archivo de ajustes de SyncDood"
+        , "cfg_exported", "Ajustes guardados en:`n{1}`n`nIncluye tus carpetas (con rutas portátiles), exclusiones y opciones. No incluye contraseñas ni tokens de la nube: conecta la nube en la otra PC desde la pestaña Nube."
+        , "cfg_fail", "No se pudo guardar el archivo: {1}"
+        , "cfg_bad", "Ese archivo no es de ajustes de SyncDood."
+        , "cfg_replace", "reemplaza la que hay aquí"
+        , "cfg_import_ask", "¿Importar {1} carpetas?{2}`n`nSyncDood se reinicia y cada carpeta hace una primera sincronización (con vista previa) antes de sincronizar normal."
+        , "sp_btn", "Espacio por carpeta…"
+        , "sp_title", "Espacio por carpeta"
+        , "sp_help", "Cuánto ocupa cada carpeta en esta PC, en la nube y en los respaldos."
+        , "sp_pc", "Esta PC"
+        , "sp_cloud", "Nube"
+        , "sp_bk_cloud", "Respaldos nube"
+        , "sp_bk_pc", "Respaldos locales"
+        , "sp_total", "Total"
+        , "sp_close", "Cerrar"
+        , "menu_pause", "Pausar sincronización"
+        , "menu_resume", "Reanudar sincronización"
+        , "pause_1h", "Por 1 hora"
+        , "pause_4h", "Por 4 horas"
+        , "pause_forever", "Hasta que la reanude"
+        , "btn_pause", "Pausar"
+        , "btn_resume", "Reanudar"
+        , "st_paused_manual", "La sincronización está en pausa. Pulsa Reanudar cuando quieras que continúe."
+        , "st_paused_until", "La sincronización está en pausa hasta {1}."
+        , "tip_paused", "Sincronización en pausa"
+        , "reason_resume_pause", "reanudando tras la pausa"
+        , "reason_resume_cap", "límite de la nube liberado"
+        , "fail_cap", "Se alcanzó el límite diario de la nube"
+        , "tip_cap", "Límite de la nube alcanzado. SyncDood reintentará solo a las {1}."
+        , "hist_cap", "Límite de la nube alcanzado; se reintenta a las {1}"
+        , "st_cap", "La nube alcanzó su límite diario. SyncDood reintentará solo a las {1}."
+        , "cap_still", "Se alcanzó el límite diario de la nube y debería liberarse a las {1}.`n`n¿Sincronizar ahora de todos modos?"
+        , "st_cloud", "Nube: {1}"
+        , "c_app_of", "Carpeta de {1}"
+        , "c_space_btn", "Ver espacio"
+        , "c_space_wait", "Consultando espacio…"
+        , "c_space_used", "SyncDood usa {1} en la nube ({2} archivos)."
+        , "c_space_acct", "Cuenta: {1} usados de {2} ({3} libres)."
+        , "c_space_none", "Esta nube no informa el espacio libre de la cuenta."
+        , "c_space_fail", "No se pudo leer el tamaño de la nube. Revisa la conexión."
         , "st_sync_folder", "Sincronizar"
         , "f_sync_one", "Sincronizar carpeta seleccionada"
         , "seg_auto", "Auto"
@@ -993,17 +1178,38 @@ BuildStrings() {
         , "fd_browse", "Examinar…"
         , "fd_portable", "Guardar la ruta como {1} (también sirve en PCs con otro nombre de usuario)"
         , "fd_tree", "Qué sincronizar"
-        , "fd_tree_help", "Quita la marca a lo que NO quieras sincronizar (archivos o carpetas completas). No se borra nada."
+        , "fd_tree_help", "Solo lo que esté MARCADO se sincroniza: se sube a tu nube y se copia a tus otras PCs. Quita la marca a lo que no quieras sincronizar (no se borra nada)."
+        , "fd_choose", "Solo quiero sincronizar UNA PARTE de esta carpeta (elegir archivos o carpetas)"
+        , "fd_simple", "Todo lo que hay dentro de esta carpeta ({2} elementos) se sincronizará con tu nube y tus otras PCs:`n{1}"
+        , "fd_simple_empty", "Esta carpeta está vacía o aún no existe. Lo que haya dentro se sincronizará con tu nube y tus otras PCs:`n{1}"
+        , "fd_tip_sub", "Consejo: si solo necesitas una subcarpeta, cancela y elige directamente esa subcarpeta."
+        , "fd_cloud_info", "En la nube, '{1}' contiene: {2}`nEstos elementos se colocarán directamente DENTRO de la carpeta elegida arriba."
+        , "fd_cloud_empty", "La carpeta de la nube '{1}' parece vacía (o no se pudo leer)."
+        , "fd_cloud_warn", "⚠ La carpeta de la nube '{1}' ya tiene una carpeta llamada '{2}' dentro. Con esta ruta terminarías con '{2}\{2}'. ¿Quisiste elegir la carpeta de arriba: {3}?"
+        , "fd_cloud_fix", "{1}`n`nLa carpeta de la nube '{2}' ya contiene una carpeta llamada '{3}', así que terminarías con:`n{1}\{3}`n`nSí = usar la carpeta de arriba ({4})`nNo = dejar esta ruta de todos modos`nCancelar = volver"
+        , "fd_root_confirm", "Esa es una carpeta muy general:`n{1}`n`nSyncDood sincronizaría todo lo que contiene, salvo lo que desmarques. Normalmente quieres la carpeta propia del juego. ¿Continuar de todos modos?"
+        , "fd_only", "Sincronizar solo lo marcado (lo NUEVO que aparezca después no se sincroniza)"
+        , "fd_only_help", "Úsalo cuando quieres solo unos pocos archivos o carpetas de una carpeta grande. Sin esto, los archivos y carpetas nuevos se sincronizan solos."
+        , "fd_count_only", "SOLO los {1} elemento(s) marcados se sincronizarán. Lo nuevo que aparezca después NO se sincronizará."
+        , "fd_adv_off", "Reglas extra (no se usan en este modo)"
+        , "fd_only_trunc", "Esta carpeta tiene demasiados elementos para listarlos todos, y «sincronizar solo lo marcado» necesita la lista completa.`n`nElige una subcarpeta, o desactiva esa opción."
+        , "ex_only", "Solo lo marcado"
+        , "fd_checkall", "Marcar todo"
+        , "fd_uncheckall", "Desmarcar todo"
+        , "fd_count", "{1} elemento(s) se sincronizarán con la nube  ·  {2} NO"
+        , "fd_none", "No hay nada marcado, así que no se sincronizaría nada. Marca lo que quieras sincronizar."
+        , "fd_err_none", "No hay nada marcado, así que SyncDood no sincronizaría nada.`n`nMarca al menos los archivos o carpetas que quieras sincronizar."
         , "fd_tree_empty", "Aún no hay nada que mostrar: la carpeta está vacía o no existe. Aun así puedes agregar reglas abajo."
         , "fd_tree_trunc", "solo se muestran los primeros {1} elementos; usa las reglas de abajo para el resto"
         , "fd_excluded", "{1} elemento(s) NO se sincronizarán"
-        , "fd_all_synced", "Se sincronizará todo"
+        , "fd_all_synced", "Todo ({1} elementos) se sincronizará con la nube"
         , "fd_adv", "Reglas extra (opcional)"
         , "fd_empty", "Sincronizar también las carpetas vacías (conservar la estructura)"
         , "fd_empty_help", "Actívalo si el juego o emulador necesita que sus carpetas existan aunque estén vacías. También se crean en tus otras PCs."
         , "fd_empty_b2", "Tu nube (Backblaze B2) no puede guardar carpetas vacías."
         , "fd_add", "Agregar carpeta"
         , "fd_err_name", "Escribe un nombre para la carpeta."
+        , "fd_big_confirm", "Esta carpeta tiene miles de archivos:`n{1}`n`n¿De verdad es la que quieres sincronizar? (Por ejemplo, elige la carpeta del propio juego, no «Documentos».)"
         , "fd_err_abs", "Elige una ruta completa en esta PC, por ejemplo C:\Juegos\Saves."
         , "fd_create_ask", "Esa carpeta aún no existe:`n{1}`n`n¿Quieres crearla?"
         , "re_local", "Si un archivo existe aquí y en la nube, gana la versión de ESTA PC."
@@ -1604,7 +1810,146 @@ EnableStartup() {
 ; ============================================================================
 StartupSync() {
     PruneBackups()
+    if AutoBlocked() {
+        ShowHeldState()
+        return
+    }
     RunSync(T("reason_start"))
+}
+
+; ---- pause (chosen by the user) and cloud-limit hold (decided by SyncDood) --------------------
+IsPaused() {
+    global PauseUntil
+    if (PauseUntil = "")
+        return false
+    if (PauseUntil = "forever")
+        return true
+    if (A_Now >= PauseUntil) {
+        PauseUntil := ""
+        try {
+            IniDelete(IniFile, "state", "pauseUntil")
+        }
+        return false
+    }
+    return true
+}
+
+CapActive() {
+    global CapUntil
+    if (CapUntil = "")
+        return false
+    if (A_Now >= CapUntil) {
+        CapUntil := ""
+        try {
+            IniDelete(IniFile, "state", "capUntil")
+        }
+        return false
+    }
+    return true
+}
+
+; automatic syncs (timer, resume from sleep, emulator closed...) stay quiet while either is active
+AutoBlocked() {
+    return (IsPaused() || CapActive())
+}
+
+; Shows the held state in the tray / banner (used when nothing else is running)
+ShowHeldState() {
+    if IsPaused()
+        SetState("ok", T("tip_paused"))
+    else if CapActive()
+        SetState("error", T("tip_cap", FormatTime(CapUntil, T("fmt_date"))))
+    UpdatePauseMenu()
+}
+
+SetPause(untilT) {
+    global PauseUntil
+    PauseUntil := untilT
+    IniWrite(untilT, IniFile, "state", "pauseUntil")
+    SetTimer(PauseExpired, 0)
+    if (untilT != "forever")
+        SetTimer(PauseExpired, -Max(1000, DateDiff(untilT, A_Now, "Seconds") * 1000))
+    ShowHeldState()
+}
+
+PauseFor(minutes) {
+    SetPause(DateAdd(A_Now, minutes, "Minutes"))
+}
+
+ClearPause() {
+    global PauseUntil
+    PauseUntil := ""
+    try {
+        IniDelete(IniFile, "state", "pauseUntil")
+    }
+    SetTimer(PauseExpired, 0)
+    UpdatePauseMenu()
+}
+
+PauseExpired() {
+    if IsPaused()
+        return
+    UpdatePauseMenu()
+    if !AutoBlocked()
+        RunSync(T("reason_resume_pause"))
+}
+
+ResumeNow(*) {
+    ClearPause()
+    if (!Syncing && !CapActive())
+        RunSync(T("reason_resume_pause"))
+    else
+        UpdateHeader()
+}
+
+; Enables / disables the "Resume" item of the tray menu
+UpdatePauseMenu() {
+    try {
+        if IsPaused()
+            A_TrayMenu.Enable(T("menu_resume"))
+        else
+            A_TrayMenu.Disable(T("menu_resume"))
+    }
+    UpdateHeader()
+}
+
+; Pause button of the Status page: opens the choices, or resumes
+PauseButton(*) {
+    if IsPaused()
+        ResumeNow()
+    else
+        PauseMenu.Show()
+}
+
+SetCap(untilT) {
+    global CapUntil
+    CapUntil := untilT
+    IniWrite(untilT, IniFile, "state", "capUntil")
+    SetTimer(CapExpired, 0)
+    SetTimer(CapExpired, -Max(1000, DateDiff(untilT, A_Now, "Seconds") * 1000))
+}
+
+CapExpired() {
+    if CapActive()
+        return
+    UpdateHeader()
+    if !AutoBlocked()
+        RunSync(T("reason_resume_cap"))
+}
+
+; If the log shows the cloud refused because of a limit, returns when it is worth trying again
+; (local time, yyyyMMddHHmmss); otherwise "".
+CapWait(txt) {
+    if RegExMatch(txt, "i)cap[_ ]exceeded") {
+        ; Backblaze: the daily caps reset at 12:00 AM GMT
+        nextMidnight := DateAdd(SubStr(A_NowUTC, 1, 8) "000000", 1, "Days")
+        return DateAdd(DateAdd(nextMidnight, UtcOffset(), "Seconds"), 3, "Minutes")
+    }
+    if RegExMatch(txt, "i)over ?quota|quota ?(is )?exceeded|exceeded.{0,20}quota|transfer quota|bandwidth limit|EOVERQUOTA|storageQuotaExceeded")
+        return DateAdd(A_Now, 60, "Minutes")
+    if RegExMatch(txt, "i)too many requests|rate ?limit|status code 429|error 429|HTTP 429")
+        return DateAdd(A_Now, 15, "Minutes")
+    return ""
 }
 ; Saves/states are rewritten while you play: syncing then makes conflicts. When the emulator closes, AfterRA syncs.
 EmuBusy() {
@@ -1613,21 +1958,23 @@ EmuBusy() {
 PeriodicSync() {
     global NextCheck
     NextCheck := DateAdd(A_Now, IntervalMin, "Minutes")
-    if EmuBusy()
+    if (EmuBusy() || AutoBlocked())
         return
     RunSync(T("reason_periodic"))
 }
 RetrySync() {
-    if EmuBusy()
+    if (EmuBusy() || AutoBlocked())
         return
     RunSync(T("reason_retry"))
 }
 ResumeSync() {
-    if EmuBusy()
+    if (EmuBusy() || AutoBlocked())
         return
     RunSync(T("reason_resume"))
 }
 AfterRA() {
+    if AutoBlocked()
+        return
     RunSync(T("reason_emu"))
 }
 
@@ -1655,39 +2002,12 @@ SetState(state, tip, kind := "") {
     LastState := state
     LastTip := tip
     TipKind := kind
-    icon := IconDir "\" state ".ico"
+    ; conflicts to review: steady amber icon (no blinking, no pop-ups) until they are reviewed in the Conflicts tab
+    icon := IconDir "\" (kind = "conflict" ? "conflict" : state) ".ico"
     if FileExist(icon)
         TraySetIcon(icon)
     A_IconTip := SubStr("SyncDood - " tip, 1, 127)
-    if (kind = "conflict")
-        StartFlash()
-    else
-        StopFlash()
     UpdateHeader()
-}
-
-; Conflict: the tray icon alternates red / amber until you open the window (no pop-up notifications)
-StartFlash() {
-    global FlashOn, FlashPhase
-    if FlashOn
-        return
-    FlashOn := true
-    FlashPhase := 0
-    SetTimer(FlashTick, 650)
-}
-
-StopFlash() {
-    global FlashOn
-    FlashOn := false
-    SetTimer(FlashTick, 0)
-}
-
-FlashTick() {
-    global FlashPhase
-    FlashPhase := !FlashPhase
-    icon := IconDir "\" (FlashPhase ? "conflict" : "error") ".ico"
-    if FileExist(icon)
-        TraySetIcon(icon)
 }
 
 ; Keeps only the last 2 days of sync.log (checked at most once an hour).
@@ -1748,12 +2068,16 @@ TrimLog(days) {
 }
 
 RunSync(reason := "manual", resyncAll := false, only := "") {
-    global Syncing, Retries, ConflictPending, SyncTotal, SyncIdx, SyncName
+    global Syncing, Retries, SyncTotal, SyncIdx, SyncName, CapName
 
     if Syncing
         return
+    if (reason = T("reason_manual") && CapActive()
+        && MsgBox(T("cap_still", FormatTime(CapUntil, T("fmt_date"))), "SyncDood", "YesNo Icon? Default2") != "Yes")
+        return
 
     Syncing := true
+    capHit := false
     SyncTotal := (only != "") ? 1 : Folders.Count
     SyncIdx := 0
     SyncName := ""
@@ -1785,7 +2109,27 @@ RunSync(reason := "manual", resyncAll := false, only := "") {
             }
             allow := true
         }
+        ; first sync: show what is on each side and ask (automatic runs leave it waiting for the user)
+        if (pending && !DryRun && !IsFirstDone(name) || (pending && resyncAll && !DryRun)) {
+            if (!isManual && reason != T("reason_first")) {
+                FState[name]["st"] := "pending"
+                FState[name]["msg"] := T("st_folder_pending")
+                continue
+            }
+            if !FirstPreview(name, path) {
+                FState[name]["st"] := "pending"
+                FState[name]["msg"] := T("st_folder_pending")
+                continue
+            }
+        }
         code := SyncFolder(name, path, pending, &nu, &nd, &nc, "", allow)
+        if (code = 91) {
+            capHit := true
+            CapName := name
+            FState[name]["st"] := "error"
+            FState[name]["msg"] := FailText(91)
+            break
+        }
         if (code = 90) {
             Blocked[name] := LastBlock
             AddHistory(name, "info", T("hist_blocked"), "")
@@ -1806,7 +2150,7 @@ RunSync(reason := "manual", resyncAll := false, only := "") {
             FState[name]["msg"] := FailText(code)
         } else {
             totUp += nu, totDown += nd, totConf += nc
-            FState[name]["st"] := (nc > 0) ? "conflict" : "ok"
+            FState[name]["st"] := (nc > 0 || FolderPendingConf(name)) ? "conflict" : "ok"
             FState[name]["when"] := FormatTime(, "HH:mm")
             FState[name]["msg"] := ""
             if (pending && !DryRun) {
@@ -1817,8 +2161,20 @@ RunSync(reason := "manual", resyncAll := false, only := "") {
     }
 
     Syncing := false
-    if (totConf > 0)
-        ConflictPending := true
+
+    ; the cloud refused because of a limit: stop here, no retries, resume by itself when it resets
+    if capHit {
+        SetCap(LastCapWait)
+        Retries := 0
+        when := FormatTime(CapUntil, T("fmt_date"))
+        AddHistory(CapName, "fail", T("hist_cap", when), "")
+        SetState("error", T("tip_cap", when))
+        UpdatePauseMenu()
+        SaveHistory()
+        RefreshHistory()
+        RefreshConflicts()
+        return
+    }
 
     ; folders that failed earlier and were not part of this run keep the error state
     others := ""
@@ -1851,9 +2207,9 @@ RunSync(reason := "manual", resyncAll := false, only := "") {
         SetState("error", T("tip_blocked", RTrim(names)))
     } else if (others != "") {
         SetState("error", T("tip_fail", others))
-    } else if ConflictPending {
+    } else if (PendingConflicts() > 0) {
         Retries := 0
-        SetState("error", T("tip_conflict"), "conflict")
+        SetState("error", T("tip_conflict", PendingConflicts()), "conflict")
     } else {
         Retries := 0
         SetState("ok", T("tip_ok", FormatTime(, T("fmt_date")), totUp, totDown))
@@ -1863,6 +2219,7 @@ RunSync(reason := "manual", resyncAll := false, only := "") {
         FetchPcLogs()
     SaveHistory()
     RefreshHistory()
+    RefreshConflicts()
 }
 
 ; true if the "name|code" list has an entry for that folder
@@ -1923,11 +2280,46 @@ FailText(code) {
         return T("fail_repair")
     if (code = "90")
         return T("fail_blocked")
+    if (code = "91")
+        return T("fail_cap")
     return T("fail_code", code)
 }
 
 ; Syncs ONE folder. Returns rclone's exit code (0 = ok).
+; "count|bytes" of a folder (local or cloud), "0|0" if it does not exist or cannot be read
+SideSize(target, name := "") {
+    args := Format('size --json "{1}"', target)
+    if (name != "")
+        args .= FilterArgs(name)
+    txt := RcloneText(args)
+    c := 0, b := 0
+    if RegExMatch(txt, '"count"\s*:\s*(\d+)', &mc)
+        c := mc[1]
+    if RegExMatch(txt, '"bytes"\s*:\s*(\d+)', &mb)
+        b := mb[1]
+    return c "|" b
+}
+
+; Before a folder's first sync: what is here, what is in the cloud and what will happen. true = go on.
+FirstPreview(name, path) {
+    ToolTip(T("pv_wait", name))
+    loc := StrSplit(SideSize(path, name), "|")
+    rem := StrSplit(SideSize(Remote "/" name, name), "|")
+    ToolTip()
+    if (loc[1] = 0 && rem[1] = 0)
+        return true
+    if (FirstWins = "local")
+        how := T("re_local")
+    else if (FirstWins = "cloud")
+        how := T("re_cloud")
+    else
+        how := T("re_newer")
+    return MsgBox(T("pv_body", name, path, loc[1], BigSize(loc[2]), rem[1], BigSize(rem[2]), how)
+        , T("pv_title"), "YesNo Icon?") = "Yes"
+}
+
 SyncFolder(name, path, resync, &nUp, &nDown, &nConf, forceMode := "", allowDel := false) {
+    global LastCapWait
     nUp := 0, nDown := 0, nConf := 0
     ; rclone bisync refuses to run when the exclusion rules changed since the last sync (it wants --resync).
     ; Do that re-listing ourselves, always in "newer wins" mode so it can't overwrite the wrong side.
@@ -1968,9 +2360,7 @@ SyncFolder(name, path, resync, &nUp, &nDown, &nConf, forceMode := "", allowDel :
         , EmptyDirsFor(name) ? " --create-empty-src-dirs" : "")
     par := ParallelNow()
     cmd .= Format(" --transfers {1} --checkers {2}", par, par * 2)
-    exFile := ExcludeFile(name)
-    if (rxs.Length > 0)
-        cmd .= Format(' --ignore-case --exclude-from "{1}"', exFile)
+    cmd .= FilterArgs(name)
     if resync {
         ; path1 = this PC, path2 = cloud
         mode := (forceMode != "") ? forceMode : FirstWins
@@ -1994,6 +2384,13 @@ SyncFolder(name, path, resync, &nUp, &nDown, &nConf, forceMode := "", allowDel :
         code := RunWait(cmd, , "Hide")
     }
     if (code != 0) {
+        ; the cloud refused because of a limit (daily cap, quota, rate limit): stop and wait for it to reset
+        capTxt := LogSince(logPos)
+        capAt := CapWait(capTxt)
+        if (capAt != "") {
+            LastCapWait := capAt
+            return 91
+        }
         ; delete protection: rclone stopped before touching anything because too much would be deleted
         if (!resync && !allowDel && ParseBlock(LogSince(logPos)))
             return 90
@@ -2037,13 +2434,23 @@ SyncFolder(name, path, resync, &nUp, &nDown, &nConf, forceMode := "", allowDel :
             confl.Push(rel)
     }
     ts := FormatTime(, "yyyy-MM-dd_HHmmss")
+    ; the screenshot of a state that also conflicted travels with the state: it gets no notice of its own
+    shotOf := Map()
+    for rel in confl {
+        sr := ShotRel(RegExReplace(rel, "\.+syncconflict\d*$"))
+        if (sr != "")
+            shotOf[StrLower(sr)] := true
+    }
     for rel in confl {
         dest := BackupDir "\" name "\conflicts\" ts "\" rel
         SplitPath(dest, , &destDir)
         DirCreate(destDir)
         try {
             FileMove(path "\" rel, dest, true)
-            AddHistory(name, "conflict", RegExReplace(rel, "\.+syncconflict\d*$"), SizeOf(post[rel]))
+            orig := RegExReplace(rel, "\.+syncconflict\d*$")
+            AddHistory(name, "conflict", orig, SizeOf(post[rel]))
+            if !shotOf.Has(StrLower(orig))
+                AddConflict(name, orig, dest, BackupDir "\" name "\conflicts\" ts)
             nConf += 1
         }
         post.Delete(rel)
@@ -2099,7 +2506,7 @@ ParallelAuto() {
 
 ; ---- exclusion rules: remember what the last good sync used -----------------
 FilterKey(name) {
-    k := ""
+    k := OnlyMode(name) ? "#only-checked`n" : ""
     for pat in ExcludePatterns(name)
         k .= pat "`n"
     ; a folder that treats empty folders differently from the cloud's default also needs the safe re-listing
@@ -2316,8 +2723,61 @@ ExcludePatterns(name) {
     return out
 }
 
+; "Only sync what is checked": the file starts with the marker line #only-checked and its rules are then
+; the items that ARE synced (everything else is ignored, including anything new).
+OnlyMode(name) {
+    f := ExcludeFile(name)
+    if !FileExist(f)
+        return false
+    txt := ""
+    try {
+        txt := FileRead(f, "UTF-8")
+    }
+    for line in StrSplit(txt, "`n", "`r") {
+        if (Trim(line) = "#only-checked")
+            return true
+    }
+    return false
+}
+
+FilterFile(name) {
+    return AppDir "\exclude\" name ".filter"
+}
+
+; Extra rclone arguments that apply the folder's rules ("" if it has none)
+FilterArgs(name) {
+    if (ExcludeRegexes(name).Length = 0)
+        return ""
+    if !OnlyMode(name)
+        return Format(' --ignore-case --exclude-from "{1}"', ExcludeFile(name))
+    ; whitelist: "+ item" for each checked item, then "- *" for everything else (first match wins)
+    out := ""
+    for pat in ExcludePatterns(name)
+        out .= "+ " (SubStr(pat, -1) = "/" ? pat "**" : pat) "`n"
+    out .= "- *`n"
+    try {
+        DirCreate(AppDir "\exclude")
+        FileDelete(FilterFile(name))
+    }
+    try {
+        FileAppend(out, FilterFile(name), "UTF-8-RAW")
+    }
+    return Format(' --ignore-case --filter-from "{1}"', FilterFile(name))
+}
+
 ExcludeRegexes(name) {
     out := []
+    if OnlyMode(name) {
+        ; allow-list regexes are marked with a leading "!" (see IsExcluded); no rules = nothing is synced
+        for pat in ExcludePatterns(name) {
+            rx := PatToRegex(pat)
+            if (rx != "")
+                out.Push("!" rx)
+        }
+        if (out.Length = 0)
+            out.Push("!i)(?!)")
+        return out
+    }
     for pat in ExcludePatterns(name) {
         rx := PatToRegex(pat)
         if (rx != "")
@@ -2389,11 +2849,17 @@ PatToRegex(pat) {
 
 IsExcluded(rel, rxs) {
     rel := StrReplace(rel, "\", "/")
+    allowRules := false, allowed := false
     for rx in rxs {
-        if RegExMatch(rel, rx)
+        if (SubStr(rx, 1, 1) = "!") {            ; allow-list rule ("only sync what is checked")
+            allowRules := true
+            if RegExMatch(rel, SubStr(rx, 2))
+                allowed := true
+        } else if RegExMatch(rel, rx) {
             return true
+        }
     }
-    return false
+    return (allowRules && !allowed)
 }
 
 ; Waits (up to ~45 s) until no non-excluded file was modified in the last SettleSec seconds,
@@ -2730,7 +3196,7 @@ PruneDir(dirPath, keepStates) {
 ; ============================================================================
 ;  Updates (GitHub releases)
 ; ============================================================================
-; Returns Map("tag", "v0.2"), Map("none", true) if there are no releases, or "" on error.
+; Returns Map("tag", "v0.2.1"), Map("none", true) if there are no releases, or "" on error.
 FetchLatest() {
     try {
         whr := ComObject("WinHttp.WinHttpRequest.5.1")
@@ -3036,23 +3502,16 @@ HoverPoll() {
 
 ; ---------------------------------------------------------------- Window -----
 ShowMain(page := 0) {
-    global ConflictPending
     if !IsObject(MainGui)
         BuildMain()
     ShowPage(page > 0 ? page : CurPage)
     RefreshHistory()
     UpdateHeader()
     MainGui.Show()
-    ; opening the window counts as "I saw the conflict"
-    if ConflictPending {
-        ConflictPending := false
-        if (!Syncing && TipKind = "conflict")
-            SetState("ok", T("tip_conflict_seen"))
-    }
 }
 
 BuildMain() {
-    global MainGui, MainBuilt, HistLV, FolderLV, GamesLV, IconFont, BannerCol, HoverHooked, Dpi, BaseW, BaseH
+    global MainGui, MainBuilt, HistLV, FolderLV, GamesLV, ConfLV, IconFont, BannerCol, HoverHooked, Dpi, BaseW, BaseH
     MainBuilt := false
     LoadTheme()
     UI.Clear()
@@ -3088,8 +3547,8 @@ BuildMain() {
         }
     }
     AddTxt(g, "", "x64 y20 w130 h36 +0x200", "SyncDood", "s14 bold", "FFFFFF", TH["side"])
-    labels := [T("tab_status"), T("tab_history"), T("tab_games"), T("tab_folders"), T("tab_cloud"), T("tab_options"), T("tab_about")]
-    icons := [Chr(0xE80F), Chr(0xE81C), Chr(0xE7FC), Chr(0xE8B7), Chr(0xE753), Chr(0xE713), Chr(0xE946)]
+    labels := [T("tab_status"), T("tab_history"), T("tab_conflicts"), T("tab_games"), T("tab_folders"), T("tab_cloud"), T("tab_options"), T("tab_about")]
+    icons := [Chr(0xE80F), Chr(0xE81C), Chr(0xE7BA), Chr(0xE7FC), Chr(0xE8B7), Chr(0xE753), Chr(0xE713), Chr(0xE946)]
     for i, lb in labels
         AddNav(g, i, 88 + (i - 1) * 46, (IconFont != "") ? icons[i] : "", lb)
     UI["navBar"] := g.Add("Text", Format("x0 y95 w4 h26 Background{1}", TH["accent"]), "")
@@ -3098,10 +3557,11 @@ BuildMain() {
     UI["sideVer"] := AddTxt(g, "", Format("x20 y{1} w{2} h20 +0x200", H0 - 36, SW - 30), T("ab_version", AppVersion), "s8 norm", Mix(TH["sideText"], TH["side"], 0.45), TH["side"])
 
     ; ---- pages
-    Loop 7
+    Loop 8
         PgCtrls.Push([])
     BuildStatusPage(g, PgCtrls[1])
     BuildHistoryPage(g, PgCtrls[2])
+    BuildConflictsPage(g, PgCtrls[PG_CONF])
     BuildGamesPage(g, PgCtrls[PG_GAMES])
     BuildFoldersPage(g, PgCtrls[PG_FOLDERS])
     BuildCloudPage(g, PgCtrls[PG_CLOUD])
@@ -3113,9 +3573,10 @@ BuildMain() {
     FillCloud()
 
     ; modern look for the lists (dark scrollbars in dark mode)
-    for lv in [HistLV, FolderLV, GamesLV]
+    for lv in [HistLV, FolderLV, GamesLV, ConfLV]
         DllCall("uxtheme\SetWindowTheme", "Ptr", lv.Hwnd, "Str", DarkNow ? "DarkMode_Explorer" : "Explorer", "Ptr", 0)
     HistLV.OnNotify(-12, HistDraw)
+    ConfLV.OnNotify(-12, ConfDraw)
 
     try {
         DllCall("dwmapi\DwmSetWindowAttribute", "Ptr", g.Hwnd, "Int", 20, "Int*", DarkNow ? 1 : 0, "Int", 4)   ; dark title bar
@@ -3176,7 +3637,14 @@ AddNav(g, i, y, icon, label) {
     ico := g.Add("Text", Format("x20 y{1} w32 h40 +0x100 +0x200 Center Background{2}", y, bg), icon)
     FS[ico.Hwnd] := ["s12 norm", fnt]
     lbl := AddTxt(g, "", Format("x58 y{1} w{2} h40 +0x100 +0x200", y, SW - 70), label, "s10 norm", TH["sideText"], bg)
-    info := Map("ctrls", [strip, ico, lbl], "bg", bg, "hv", TH["sideHov"], "kind", "nav")
+    ctrls := [strip, ico, lbl]
+    if (i = PG_CONF) {
+        ; "⚠ 2": number of conflicts to review (empty when there are none)
+        badge := AddTxt(g, "", Format("x{1} y{2} w58 h40 +0x100 +0x200 Right", SW - 74, y), "", "s9 bold", TH["warn"], bg)
+        ctrls.Push(badge)
+        UI["navBadge"] := badge
+    }
+    info := Map("ctrls", ctrls, "bg", bg, "hv", TH["sideHov"], "kind", "nav")
     for c in info["ctrls"] {
         Hov[c.Hwnd] := info
         c.OnEvent("Click", NavClick.Bind(i))
@@ -3217,24 +3685,14 @@ ShowPage(i) {
     }
     SetNav(i)
     UpdateHeader()
-    if (i = PG_HIST) {
+    if (i = PG_HIST)
         RefreshHistory()
-        AckConflict()
-    }
+    if (i = PG_CONF)
+        RefreshConflicts()
     if (i = PG_GAMES)
         RefreshGames()
     else
         UI["gEmpty"].Visible := false
-}
-
-; Looking at the history counts as having reviewed a conflict (stops the flashing icon)
-AckConflict() {
-    global ConflictPending
-    if ConflictPending {
-        ConflictPending := false
-        if (!Syncing && TipKind = "conflict")
-            SetState("ok", T("tip_conflict_seen"))
-    }
 }
 
 ; ---------------------------------------------------------- Page: Status -----
@@ -3252,13 +3710,16 @@ BuildStatusPage(g, arr) {
     UI["bBtn2"] := AddBtn(g, arr, x + w - 188, 86, 172, 32, T("btn_details"), ShowDetails, "ban2")
 
     ; one line under the banner: progress / pause notice / next check
-    UI["infoTxt"] := AddTxt(g, arr, Format("x{1} y158 w{2} h22 +0x200", x, w - 10), "", "s9 norm", TH["sub"], TH["bg"])
+    UI["infoTxt"] := AddTxt(g, arr, Format("x{1} y158 w{2} h22 +0x200", x, w - 200), "", "s9 norm", TH["sub"], TH["bg"])
+    UI["bPause"] := AddBtn(g, arr, x + w - 190, 152, 190, 28, T("btn_pause"), PauseButton)
+    UI["pauseKind"] := "norm"
     UI["barTrack"] := g.Add("Text", Format("x{1} y184 w{2} h4 Background{3}", x, w, TH["track"]), "")
     UI["barFill"] := g.Add("Text", Format("x{1} y184 w120 h4 Background{2}", x, TH["accent"]), "")
     arr.Push(UI["barTrack"], UI["barFill"])
 
     ; folders
     AddTxt(g, arr, Format("x{1} y206 w300 h24 +0x200", x), T("tab_folders"), "s11 bold", TH["text"], TH["bg"])
+    UI["stCloud"] := AddTxt(g, arr, Format("x{1} y206 w{2} h24 +0x200 +0x2", x + w - 440, 440), "", "s9 norm", TH["sub"], TH["bg"])
     UI["rows"] := []
     y := 236
     n := 0
@@ -3456,6 +3917,446 @@ EvColor(ev) {
     return TH["info"]
 }
 
+; ========================================================= Page: Conflicts ===
+; When the same file changes on two PCs, the sync keeps the newest copy and saves the other one in the backups.
+; This page lists those cases so you can compare both versions and, only if you want to, bring the other one back.
+; Nothing here interrupts you: a ⚠ with a number next to the tab and an amber tray icon are the only notice.
+BuildConflictsPage(g, arr) {
+    global ConfLV
+    x := CX
+    cw := 356                                   ; width of each version card
+    AddTxt(g, arr, Format("x{1} y22 w{2} h40 +0x200", x, CW0 - 220), T("tab_conflicts"), "s18 bold", TH["text"], TH["bg"])
+    UI["cfAll"] := AddBtn(g, arr, x + CW0 - 200, 28, 200, 30, T("cf_all"), ConfMarkAll)
+    AddTxt(g, arr, Format("x{1} y66 w{2} h40", x, CW0), T("cf_help"), "s9 norm", TH["sub"], TH["bg"])
+
+    g.SetFont("s9 norm c" TH["text"], "Segoe UI")
+    ConfLV := g.Add("ListView", Format("x{1} y114 w{2} h170 -Multi +LV0x10000 -E0x200 c{3} Background{4}"
+        , x, CW0 + 28, TH["text"], TH["lvBg"])
+        , [T("col_date"), T("col_folder"), T("col_file"), T("cf_col_state")])
+    arr.Push(ConfLV)
+    ConfLV.OnEvent("ItemSelect", ConfSelect)
+    UI["cfEmpty"] := AddTxt(g, arr, Format("x{1} y{2} w{3} h28 +0x200 Center", x, 190, CW0), T("cf_none"), "s10 norm", TH["sub"], TH["lvBg"])
+    LayoutConf(Px(CW0 + 28))
+
+    ; the file being looked at, and the two versions side by side
+    UI["cfFile"] := AddTxt(g, arr, Format("x{1} y294 w{2} h26 +0x200 +0x4000", x, CW0), "", "s10 bold", TH["text"], TH["bg"])
+    UI["cfDetail"] := [UI["cfFile"]]
+    UI["cfSides"] := []
+    Loop 2 {
+        n := A_Index
+        x0 := x + (n - 1) * (cw + 12)
+        d := Map("x0", x0)
+        d["card"] := g.Add("Text", Format("x{1} y326 w{2} h166 Background{3}", x0, cw, TH["card"]), "")
+        arr.Push(d["card"])
+        d["title"] := AddTxt(g, arr, Format("x{1} y334 w{2} h26 +0x200", x0 + 12, cw - 24), T(n = 1 ? "cf_cur" : "cf_oth"), "s10 bold", TH["text"], TH["card"])
+        d["box"] := g.Add("Text", Format("x{1} y368 w152 h114 Background{2}", x0 + 12, TH["lvBg"]), "")
+        arr.Push(d["box"])
+        d["pic"] := g.Add("Picture", Format("x{1} y368 w10 h10 BackgroundTrans", x0 + 12), "")
+        arr.Push(d["pic"])
+        d["noPic"] := AddTxt(g, arr, Format("x{1} y404 w152 h44 Center", x0 + 12), T("v_nopreview"), "s8 norm", TH["sub"], TH["lvBg"])
+        d["size"] := AddTxt(g, arr, Format("x{1} y368 w{2} h22 +0x200", x0 + 176, cw - 188), "", "s9 norm", TH["text"], TH["card"])
+        d["date"] := AddTxt(g, arr, Format("x{1} y392 w{2} h22 +0x200", x0 + 176, cw - 188), "", "s9 norm", TH["text"], TH["card"])
+        d["from"] := AddTxt(g, arr, Format("x{1} y416 w{2} h22 +0x200 +0x4000", x0 + 176, cw - 188), "", "s9 norm", TH["sub"], TH["card"])
+        d["tag"] := AddTxt(g, arr, Format("x{1} y446 w{2} h22 +0x200", x0 + 176, cw - 188), "", "s9 bold", TH["sub"], TH["card"])
+        UI["cfSides"].Push(d)
+        UI["cfDetail"].Push(d["card"], d["title"], d["box"], d["size"], d["date"], d["from"], d["tag"])
+    }
+    UI["cfHint"] := AddTxt(g, arr, Format("x{1} y380 w{2} h40 +0x200 Center", x, CW0), T("cf_pick"), "s10 norm", TH["sub"], TH["bg"])
+    UI["cfShotCur"] := ""
+    UI["cfShotOth"] := ""
+
+    UI["cfKeep"] := AddBtn(g, arr, x, 506, 220, 36, T("cf_keep"), ConfKeep, "prim")
+    UI["cfUse"] := AddBtn(g, arr, x + 228, 506, 220, 36, T("cf_use"), ConfUse)
+    UI["cfCmp"] := AddBtn(g, arr, x + 456, 506, 240, 36, T("cf_compare"), ConfCompare)
+    AddTxt(g, arr, Format("x{1} y556 w{2} h40", x, CW0), T("cf_foot"), "s8 norm", TH["sub"], TH["bg"])
+}
+
+; Column widths (design units); the file column takes what is left
+LayoutConf(wRaw) {
+    wd := wRaw / Dpi
+    ConfLV.ModifyCol(1, Px(112))
+    ConfLV.ModifyCol(2, Px(130))
+    ConfLV.ModifyCol(4, Px(190))
+    ConfLV.ModifyCol(3, Px(Max(120, wd - 112 - 130 - 190 - 24)))
+}
+
+; Colors of the list: the "to review" status in amber, dates dimmed
+ConfDraw(ctrl, lParam) {
+    static CDDS_PREPAINT := 0x1, CDDS_ITEMPREPAINT := 0x10001, CDDS_SUBITEM := 0x30001
+    p := A_PtrSize
+    stage := NumGet(lParam, 3 * p, "UInt")
+    if (stage = CDDS_PREPAINT || stage = CDDS_ITEMPREPAINT)
+        return 0x20
+    if (stage = CDDS_SUBITEM) {
+        offSpec := (p = 8) ? 56 : 36
+        offClr := (p = 8) ? 80 : 48
+        row := NumGet(lParam, offSpec, "Ptr") + 1
+        sub := NumGet(lParam, offClr + 8, "Int")
+        col := TH["text"]
+        if (row <= ConfRows.Length) {
+            if (sub = 0)
+                col := TH["sub"]
+            else if (sub = 3)
+                col := (ConfRows[row]["status"] = "pending") ? TH["warn"] : TH["sub"]
+        }
+        NumPut("UInt", BGR(col), lParam, offClr)
+        return 0x2
+    }
+    return 0
+}
+
+ConfSelect(*) {
+    ConfShowSel()
+}
+
+; The notice the list has selected ("" if none)
+ConfSel() {
+    if !IsObject(ConfLV)
+        return ""
+    r := ConfLV.GetNext(0)
+    return (r >= 1 && r <= ConfRows.Length) ? ConfRows[r] : ""
+}
+
+ConfStatusText(c) {
+    switch c["status"] {
+        case "pending":
+            return T("cf_pending")
+        case "swapped":
+            return T("cf_swapped")
+    }
+    return T("cf_kept")
+}
+
+; Rebuilds the list (to review first, then the ones already resolved) and the ⚠ number next to the tab
+RefreshConflicts() {
+    global ConfRows
+    CleanConflicts()
+    ConfRows := []
+    Loop Conflicts.Length {
+        c := Conflicts[Conflicts.Length - A_Index + 1]
+        if (c["status"] = "pending")
+            ConfRows.Push(c)
+    }
+    Loop Conflicts.Length {
+        c := Conflicts[Conflicts.Length - A_Index + 1]
+        if (c["status"] != "pending")
+            ConfRows.Push(c)
+    }
+    UpdateConfBadge()
+    if (!MainBuilt || !IsObject(MainGui) || CurPage != PG_CONF)
+        return
+    prev := ConfSel()
+    ConfLV.Opt("-Redraw")
+    ConfLV.Delete()
+    for c in ConfRows
+        ConfLV.Add(, FormatTime(c["ts"], T("fmt_date")), c["folder"], c["rel"], ConfStatusText(c))
+    ConfLV.Opt("+Redraw")
+    UI["cfEmpty"].Visible := (ConfRows.Length = 0)
+    if (ConfRows.Length > 0) {
+        idx := 1
+        if IsObject(prev) {
+            for i, c in ConfRows {
+                if (ObjPtr(c) = ObjPtr(prev))
+                    idx := i
+            }
+        }
+        ConfLV.Modify(idx, "Select Focus Vis")
+    }
+    ConfShowSel()
+}
+
+; "⚠ 2" at the right of the Conflicts tab; empty when there is nothing to review
+UpdateConfBadge() {
+    if (!IsObject(MainGui) || !UI.Has("navBadge"))
+        return
+    n := PendingConflicts()
+    txt := (n > 0) ? "⚠ " n : ""
+    if (UI["navBadge"].Text != txt)
+        UI["navBadge"].Text := txt
+}
+
+; Shows both versions of the selected notice
+ConfShowSel() {
+    if (!MainBuilt || CurPage != PG_CONF)
+        return
+    c := ConfSel()
+    on := IsObject(c)
+    for ctl in UI["cfDetail"]
+        ctl.Visible := on
+    UI["cfHint"].Visible := !on
+    pend := (on && c["status"] = "pending")
+    UI["cfKeep"].Visible := pend
+    UI["cfUse"].Visible := pend
+    UI["cfAll"].Visible := (PendingConflicts() > 1)
+    sides := UI["cfSides"]
+    if !on {
+        for d in sides {
+            d["pic"].Visible := false
+            d["noPic"].Visible := false
+        }
+        UI["cfCmp"].Visible := false
+        return
+    }
+    folder := c["folder"], rel := c["rel"]
+    fdir := Folders.Get(folder, "")
+    curP := (fdir != "") ? fdir "\" rel : ""
+    othP := c["loser"]
+    sr := ShotRel(rel)
+    curShot := (sr != "" && fdir != "" && FileExist(fdir "\" sr)) ? fdir "\" sr : ""
+    othShot := (sr != "") ? FindVariant(c["dir"], sr) : ""
+    UI["cfFile"].Text := rel "   ·   " folder
+
+    ; which one is newer
+    tag1 := "", tag2 := ""
+    if (curP != "" && FileExist(curP) && FileExist(othP)) {
+        diff := DateDiff(FileGetTime(curP, "M"), FileGetTime(othP, "M"), "Seconds")
+        if (diff > 1) {
+            tag1 := "cf_newer"
+            tag2 := "cf_older"
+        } else if (diff < -1) {
+            tag1 := "cf_older"
+            tag2 := "cf_newer"
+        }
+    }
+    isState := IsStateFile(rel)
+    ConfFillSide(sides[1], curP, folder, rel, curShot, tag1, isState)
+    ConfFillSide(sides[2], othP, folder, rel, othShot, tag2, isState)
+    UI["cfShotCur"] := curShot
+    UI["cfShotOth"] := othShot
+    UI["cfCmp"].Visible := (curShot != "" && othShot != "")
+}
+
+; Size, date, who saved it and screenshot of one side
+ConfFillSide(d, path, folder, rel, shot, tag, isState) {
+    if (path != "" && FileExist(path)) {
+        tm := FileGetTime(path, "M")
+        sz := FileGetSize(path)
+        d["size"].Text := T("cf_size", FormatSize(sz))
+        d["date"].Text := T("cf_date", FormatTime(tm, T("fmt_date")))
+        who := OriginOf(folder, rel, tm, sz)
+        d["from"].Text := (who != "") ? T("cf_origin", who) : ""
+    } else {
+        d["size"].Text := T("cf_missing")
+        d["date"].Text := ""
+        d["from"].Text := ""
+    }
+    d["tag"].Text := (tag != "") ? T(tag) : ""
+    if (tag != "")
+        Recolor(d["tag"], (tag = "cf_newer") ? TH["ok"] : TH["sub"])
+    shown := SetPic(d["pic"], shot, Px(d["x0"] + 12), Px(368), Px(152), Px(114))
+    d["noPic"].Text := isState ? T("v_nopreview") : T("cf_nofile")
+    d["noPic"].Visible := !shown
+}
+
+; Big view of the two screenshots
+ConfCompare(*) {
+    c := ConfSel()
+    if (!IsObject(c) || UI["cfShotCur"] = "" || UI["cfShotOth"] = "")
+        return
+    curP := Folders.Get(c["folder"], "") "\" c["rel"]
+    capA := T("cf_cur")
+    if FileExist(curP)
+        capA .= "  ·  " FormatTime(FileGetTime(curP, "M"), T("fmt_date"))
+    capB := T("cf_oth")
+    if FileExist(c["loser"])
+        capB .= "  ·  " FormatTime(FileGetTime(c["loser"], "M"), T("fmt_date"))
+    CompareShots(MainGui, c["rel"], UI["cfShotCur"], capA, UI["cfShotOth"], capB)
+}
+
+; ---- actions
+
+; "Keep the current one": nothing changes in your files, the notice is just marked as reviewed
+ConfKeep(*) {
+    c := ConfSel()
+    if (!IsObject(c) || c["status"] != "pending")
+        return
+    c["status"] := "kept"
+    c["done"] := A_Now
+    ConfChanged()
+}
+
+ConfMarkAll(*) {
+    n := PendingConflicts()
+    if (n = 0)
+        return
+    if (MsgBox(T("cf_confirm_all", n), "SyncDood", "YesNo Icon?") != "Yes")
+        return
+    for c in Conflicts {
+        if (c["status"] = "pending") {
+            c["status"] := "kept"
+            c["done"] := A_Now
+        }
+    }
+    ConfChanged()
+}
+
+; "Use the other one": the version in use goes to the backups first, then the other one takes its place.
+; It gets today's date so the next sync spreads it to the other PCs instead of undoing it.
+ConfUse(*) {
+    c := ConfSel()
+    if (!IsObject(c) || c["status"] != "pending")
+        return
+    if CheckBusy()
+        return
+    folder := c["folder"], rel := c["rel"]
+    if (!Folders.Has(folder) || !FileExist(c["loser"])) {
+        RefreshConflicts()
+        return
+    }
+    msg := T("cf_confirm_use", rel)
+    if (WatchProc != "" && ProcessExist(WatchProc))
+        msg .= "`n`n" T("v_confirm_emu")
+    if (MsgBox(msg, "SyncDood", "YesNo Icon?") != "Yes")
+        return
+
+    dest := Folders[folder] "\" rel
+    sr := ShotRel(rel)
+    shotDest := (sr != "") ? Folders[folder] "\" sr : ""
+    shotSrc := (sr != "") ? FindVariant(c["dir"], sr) : ""
+    stamp := BackupDir "\" folder "\conflicts\" FormatTime(, "yyyy-MM-dd_HHmmss")
+    newLoser := ""
+    try {
+        ; 1) what is in use now is kept in the backups
+        if FileExist(dest) {
+            newLoser := stamp "\" rel
+            SplitPath(newLoser, , &bkDir)
+            DirCreate(bkDir)
+            FileCopy(dest, newLoser, true)
+            if (shotDest != "" && FileExist(shotDest)) {
+                SplitPath(stamp "\" sr, , &bkDir)
+                DirCreate(bkDir)
+                FileCopy(shotDest, stamp "\" sr, true)
+            }
+        }
+        ; 2) the other version takes its place
+        SplitPath(dest, , &destDir)
+        DirCreate(destDir)
+        FileCopy(c["loser"], dest, true)
+        if (shotDest != "" && shotSrc != "")
+            FileCopy(shotSrc, shotDest, true)
+        FileSetTime(A_Now, dest, "M")
+        if (shotDest != "" && FileExist(shotDest))
+            FileSetTime(A_Now, shotDest, "M")
+    } catch as err {
+        MsgBox(T("v_fail", err.Message), "SyncDood", "Iconx")
+        return
+    }
+
+    ; the list now shows the former one as "the other version", so nothing is lost track of
+    if (newLoser != "") {
+        c["loser"] := newLoser
+        c["dir"] := stamp
+    }
+    c["status"] := "swapped"
+    c["done"] := A_Now
+    AddHistory(folder, "restore", rel, FileGetSize(dest))
+    SaveHistory()
+    RefreshHistory()
+    ConfChanged()
+}
+
+; After any change of the notices: save, refresh the list, and settle the tray icon / folder status
+ConfChanged() {
+    SaveConflicts()
+    for nm, fs in FState {
+        if (fs["st"] = "conflict" && !FolderPendingConf(nm))
+            fs["st"] := "ok"
+    }
+    n := PendingConflicts()
+    if (!Syncing && TipKind = "conflict") {
+        if (n > 0)
+            SetState("error", T("tip_conflict", n), "conflict")
+        else
+            SetState("ok", T("tip_conflict_seen"))
+    }
+    RefreshConflicts()
+    UpdateHeader()
+}
+
+; ---- data (data\conflicts.tsv: one notice per line, they survive restarts)
+LoadConflicts() {
+    global Conflicts
+    Conflicts := []
+    if !FileExist(ConfFile)
+        return
+    for line in StrSplit(FileRead(ConfFile, "UTF-8"), "`n", "`r") {
+        f := StrSplit(line, "`t")
+        if (f.Length >= 7)
+            Conflicts.Push(Map("ts", f[1], "folder", f[2], "rel", f[3], "status", f[4], "loser", f[5], "dir", f[6], "done", f[7]))
+    }
+    CleanConflicts()
+}
+
+SaveConflicts() {
+    global Conflicts
+    ; every pending one is kept; of the resolved ones only the 40 most recent
+    keep := []
+    nRes := 0
+    Loop Conflicts.Length {
+        c := Conflicts[Conflicts.Length - A_Index + 1]
+        if (c["status"] != "pending") {
+            nRes += 1
+            if (nRes > 40)
+                continue
+        }
+        keep.InsertAt(1, c)
+    }
+    Conflicts := keep
+    out := ""
+    for c in Conflicts
+        out .= c["ts"] "`t" c["folder"] "`t" c["rel"] "`t" c["status"] "`t" c["loser"] "`t" c["dir"] "`t" c["done"] "`n"
+    try {
+        FileDelete(ConfFile)
+    }
+    try {
+        FileAppend(out, ConfFile, "UTF-8")
+    }
+}
+
+; Called by the sync when it saves the losing copy of a file. A newer notice for the same file replaces the older one.
+AddConflict(folder, rel, loser, dir) {
+    Loop Conflicts.Length {
+        i := Conflicts.Length - A_Index + 1
+        c := Conflicts[i]
+        if (c["status"] = "pending" && c["folder"] = folder && StrLower(c["rel"]) = StrLower(rel))
+            Conflicts.RemoveAt(i)
+    }
+    Conflicts.Push(Map("ts", A_Now, "folder", folder, "rel", rel, "status", "pending", "loser", loser, "dir", dir, "done", ""))
+    SaveConflicts()
+}
+
+; Forgets the pending ones that can no longer be compared: the saved copy is gone (automatic cleanup) or the folder was removed
+CleanConflicts() {
+    changed := false
+    Loop Conflicts.Length {
+        i := Conflicts.Length - A_Index + 1
+        c := Conflicts[i]
+        if (c["status"] = "pending" && (!Folders.Has(c["folder"]) || !FileExist(c["loser"]))) {
+            Conflicts.RemoveAt(i)
+            changed := true
+        }
+    }
+    if changed
+        SaveConflicts()
+}
+
+PendingConflicts() {
+    n := 0
+    for c in Conflicts {
+        if (c["status"] = "pending")
+            n += 1
+    }
+    return n
+}
+
+FolderPendingConf(name) {
+    for c in Conflicts {
+        if (c["status"] = "pending" && c["folder"] = name)
+            return true
+    }
+    return false
+}
+
 ; --------------------------------------------------------- Page: Folders -----
 BuildFoldersPage(g, arr) {
     global FolderLV
@@ -3511,7 +4412,10 @@ BuildCloudPage(g, arr) {
     UI["cloudTgt"] := AddTxt(g, arr, Format("x{1} y156 w{2} h40", CX + 22, CW0 - 44), "", "s9 norm", TH["sub"], TH["card"])
     AddBtn(g, arr, CX, 226, 190, 34, T("c_change"), ChangeCloudUI, "prim")
     AddBtn(g, arr, CX + 198, 226, 190, 34, T("c_test"), TestCloudUI)
-    AddTxt(g, arr, Format("x{1} y284 w{2} h60", CX, CW0), T("c_note"), "s9 norm", TH["sub"], TH["bg"])
+    AddBtn(g, arr, CX + 396, 226, 150, 34, T("c_space_btn"), CloudSpaceUI)
+    AddBtn(g, arr, CX + 554, 226, 170, 34, T("sp_btn"), SpacePanelUI)
+    UI["cloudSpace"] := AddTxt(g, arr, Format("x{1} y276 w{2} h44", CX, CW0), "", "s10 norm", TH["text"], TH["bg"])
+    AddTxt(g, arr, Format("x{1} y332 w{2} h60", CX, CW0), T("c_note"), "s9 norm", TH["sub"], TH["bg"])
 }
 
 ; --------------------------------------------------------- Page: Options -----
@@ -3578,6 +4482,9 @@ BuildOptionsPage(g, arr) {
     AddBtn(g, arr, lx + 336, y, 110, 36, T("o_open_log"), MenuOpenLog)
     AddBtn(g, arr, lx + 454, y, 130, 36, T("o_open_backups"), MenuOpenBackup)
     y += 46
+    AddBtn(g, arr, lx, y, 190, 30, T("o_export"), ExportConfigUI)
+    AddBtn(g, arr, lx + 198, y, 190, 30, T("o_import"), ImportConfigUI)
+    y += 40
     AddBtn(g, arr, lx, y, 190, 30, T("o_uninstall"), UninstallUI, "danger")
 }
 
@@ -4788,7 +5695,9 @@ OnMainSize(g, minMax, w, h) {
     UI["bBtn2"].Move(Px(CX + CW0 - 188) + dw)
     UI["bTitle"].Move(, , Px(CW0 - 118 - 204) + dw)
     UI["bSub"].Move(, , Px(CW0 - 120 - 204) + dw)
-    UI["infoTxt"].Move(, , Px(CW0 - 10) + dw)
+    UI["infoTxt"].Move(, , Px(CW0 - 200) + dw)
+    UI["bPause"].Move(Px(CX + CW0 - 190) + dw)
+    UI["stCloud"].Move(Px(CX + CW0 - 440) + dw)
     UI["barTrack"].Move(, , Px(CW0) + dw)
     for r in UI["rows"] {
         r["card"].Move(, , Px(CW0) + dw)
@@ -4803,6 +5712,13 @@ OnMainSize(g, minMax, w, h) {
     UI["hLine"].Move(, , Px(CW0 + 28) + dw)
     UI["histEmpty"].Move(, , Px(CW0) + dw)
     LayoutHist(Px(CW0 + 28) + dw)
+    ; conflicts
+    ConfLV.Move(, , Px(CW0 + 28) + dw)
+    LayoutConf(Px(CW0 + 28) + dw)
+    UI["cfEmpty"].Move(, , Px(CW0) + dw)
+    UI["cfAll"].Move(Px(CX + CW0 - 200) + dw)
+    UI["cfFile"].Move(, , Px(CW0) + dw)
+    UI["cfHint"].Move(, , Px(CW0) + dw)
     ; games
     for i, c in UI["gSort"]["btns"]
         c.Move(Px(CX + 560 + (i - 1) * 84) + dw)
@@ -4817,6 +5733,7 @@ OnMainSize(g, minMax, w, h) {
     LayoutFolders(Px(CW0 + 28) + dw)
     ; cloud
     UI["cloudCard"].Move(, , Px(CW0) + dw)
+    UI["cloudSpace"].Move(, , Px(CW0) + dw)
     UI["cloudCur"].Move(, , Px(CW0 - 44) + dw)
     UI["cloudTgt"].Move(, , Px(CW0 - 44) + dw)
 }
@@ -4870,6 +5787,9 @@ UpdateHeader() {
         UI["bTitle"].Text := title
     if (UI["bSub"].Text != LastTip)
         UI["bSub"].Text := LastTip
+    bt := (kind = "conflict") ? T("btn_cf_review") : T("btn_details")
+    if (UI["bBtn2"].Text != bt)
+        UI["bBtn2"].Text := bt
     Recolor(UI["sideDot"], dotc)
     UI["sideTxt"].Text := side
 
@@ -4878,6 +5798,10 @@ UpdateHeader() {
         info := T("st_waiting", SyncName)
     } else if Syncing {
         info := T("st_progress", SyncName, SyncIdx, SyncTotal)
+    } else if IsPaused() {
+        info := (PauseUntil = "forever") ? T("st_paused_manual") : T("st_paused_until", FormatTime(PauseUntil, T("fmt_date")))
+    } else if CapActive() {
+        info := T("st_cap", FormatTime(CapUntil, T("fmt_date")))
     } else if EmuBusy() {
         info := T("st_paused", WatchProc)
     } else if (NextCheck != 0) {
@@ -4887,6 +5811,19 @@ UpdateHeader() {
     }
     if (UI["infoTxt"].Text != info)
         UI["infoTxt"].Text := info
+    ; pause button and cloud name
+    paused := IsPaused()
+    pk := paused ? "prim" : "norm"
+    if (UI["pauseKind"] != pk) {
+        UI["pauseKind"] := pk
+        SetBtnKind(UI["bPause"], pk)
+    }
+    pt := paused ? T("btn_resume") : T("btn_pause")
+    if (UI["bPause"].Text != pt)
+        UI["bPause"].Text := pt
+    ct := T("st_cloud", CloudDisplayName())
+    if (UI["stCloud"].Text != ct)
+        UI["stCloud"].Text := ct
     barOn := (Syncing && CurPage = PG_STATUS)
     UI["barFill"].Visible := barOn
     if barOn
@@ -4933,6 +5870,7 @@ UpdateHeader() {
     }
     RefreshFolderStatus()
     RefreshActivity()
+    UpdateConfBadge()
 }
 
 ; Indeterminate progress bar: a segment that slides along the track
@@ -5009,6 +5947,10 @@ LastErrors(n := 20) {
 }
 
 ShowDetails(*) {
+    if (TipKind = "conflict" && PendingConflicts() > 0 && IsObject(MainGui)) {
+        ShowPage(PG_CONF)
+        return
+    }
     body := LastTip
     errs := LastErrors(24)
     body .= "`n`n" . (errs != "" ? errs : T("det_none"))
@@ -5083,7 +6025,7 @@ FillFolders() {
         shownPath := path
         if (FolderRaw.Get(name, path) != path)
             shownPath .= "   [" T("f_portable_tag") "]"
-        FolderLV.Add(, name, shownPath, FolderStatus(FState.Get(name, ""), &c), (n > 0) ? T("ex_rules", n) : "—")
+        FolderLV.Add(, name, shownPath, FolderStatus(FState.Get(name, ""), &c), (n > 0) ? (OnlyMode(name) ? T("ex_only") : T("ex_rules", n)) : "—")
         if (name = selName)
             selRow := shown
     }
@@ -5141,7 +6083,7 @@ FolderDialog(mode, name := "", preset := "") {
     isEdit := (mode = "edit")
     isCloud := (mode = "cloud")
     W := 668
-    st := Map("trunc", false, "port", "", "auto", "", "advInit", false)
+    st := Map("trunc", false, "port", "", "auto", "", "advInit", false, "shown", false, "dy", 0, "h", 0, "onlyInit", (mode = "edit" && OnlyMode(name)))
     nodes := Map()                                  ; tree item id -> [relative path, is folder, checked]
     cur := isEdit ? ExcludePatterns(name) : []
     managed := Map()                                ; rules the tree can show (a plain path): key -> rule
@@ -5154,6 +6096,16 @@ FolderDialog(mode, name := "", preset := "") {
             advLines.Push(ln0)
     }
     canEmpty := KeepsEmptyDirs()
+    advList := []                                   ; controls of the "choose what to sync" block (hidden in simple mode)
+    lowList := []                                   ; controls below it (they move up when the block is hidden)
+    lowY := []
+    cloudTop := []                                  ; what the cloud folder holds (only when adding from the cloud)
+    if isCloud {
+        ToolTip(T("cf_looking"))
+        cloudTop := CloudTopLs(Remote "/" name)
+        ToolTip()
+    }
+    lCloud := ""
 
     ; ---- behavior (defined first; it uses the controls created below) ------------------------------
     AddRule(txt, *) {
@@ -5166,13 +6118,90 @@ FolderDialog(mode, name := "", preset := "") {
     }
 
     Recount() {
-        rules := ExcTreeRules(tv, nodes, [])
-        txt2 := rules.Length ? T("fd_excluded", rules.Length) : T("fd_all_synced")
-        if st["trunc"]
-            txt2 .= "  ·  " T("fd_tree_trunc", ExcTreeMax())
-        else if (nodes.Count = 0)
+        on := 0
+        for id in nodes {
+            if tv.Get(id, "Check")
+                on += 1
+        }
+        off := nodes.Count - on
+        warnNone := (nodes.Count > 0 && on = 0)
+        if (nodes.Count = 0)
             txt2 := T("fd_tree_empty")
+        else if warnNone
+            txt2 := T("fd_none")
+        else if tOnly["on"]
+            txt2 := T("fd_count_only", on)
+        else if (off = 0)
+            txt2 := T("fd_all_synced", on)
+        else
+            txt2 := T("fd_count", on, off)
+        if (st["trunc"] && nodes.Count > 0)
+            txt2 .= "  ·  " T("fd_tree_trunc", ExcTreeMax())
+        lInfo.SetFont("s9 " (warnNone ? "bold c" TH["warn"] : "norm c" TH["sub"]))
         lInfo.Text := txt2
+    }
+
+    ; simple mode (sync everything) or "choose what to sync" (tree)
+    ApplyMode(resize := true) {
+        simple := !tChoose["on"]
+        for c in advList
+            c.Visible := !simple
+        lSimple.Visible := simple
+        if (lowY.Length = 0) {
+            for c in lowList {
+                c.GetPos(, &yy)
+                lowY.Push(yy)
+            }
+        }
+        dy := simple ? st["dy"] : 0
+        for i, c in lowList
+            c.Move(, lowY[i] - dy)
+        if (resize && st["shown"])
+            d.Show("w" (W + 32) " h" (st["h"] - dy))
+    }
+
+    UpdateSimple() {
+        absp := RTrim(ExpandPath(ePath.Value), "\")
+        txt3 := (nodes.Count = 0) ? T("fd_simple_empty", absp) : T("fd_simple", absp, st["trunc"] ? "4,000+" : nodes.Count)
+        if !isCloud
+            txt3 .= "`n" T("fd_tip_sub")
+        lSimple.Text := txt3
+    }
+
+    ; the cloud folder already holds a folder called like the chosen one? (that would nest it: settings\settings)
+    CloudDupDir(leaf) {
+        for it in cloudTop {
+            if (SubStr(it, -1) = "/" && leaf != "" && StrLower(RTrim(it, "/")) = StrLower(leaf))
+                return RTrim(it, "/")
+        }
+        return ""
+    }
+
+    UpdateCloudInfo() {
+        if !isCloud
+            return
+        absp := RTrim(ExpandPath(ePath.Value), "\")
+        SplitPath(absp, &leaf, &parent)
+        dup := CloudDupDir(leaf)
+        if (dup != "") {
+            lCloud.SetFont("s8 bold c" TH["warn"])
+            lCloud.Text := T("fd_cloud_warn", name, dup, parent)
+            return
+        }
+        lCloud.SetFont("s8 norm c" TH["sub"])
+        if (cloudTop.Length = 0) {
+            lCloud.Text := T("fd_cloud_empty", name)
+            return
+        }
+        lst := ""
+        for i, it in cloudTop {
+            if (i > 6) {
+                lst .= ", … (+" (cloudTop.Length - 6) ")"
+                break
+            }
+            lst .= (i > 1 ? ", " : "") StrReplace(it, "/", "\")
+        }
+        lCloud.Text := T("fd_cloud_info", name, lst)
     }
 
     UpdatePortable() {
@@ -5192,10 +6221,10 @@ FolderDialog(mode, name := "", preset := "") {
         tv.Delete()
         nodes.Clear()
         used := Map()
-        ctx := Map("count", 0, "max", ExcTreeMax(), "trunc", false, "managed", managed, "used", used
+        ctx := Map("count", 0, "max", ExcTreeMax(), "trunc", false, "managed", managed, "used", used, "only", st["onlyInit"]
             , "iF", iFolder ? " Icon" iFolder : "", "iD", iFile ? " Icon" iFile : "")
         if (absp != "" && DirExist(absp))
-            ExcTreeFill(tv, nodes, absp, "", 0, false, ctx)
+            ExcTreeFill(tv, nodes, absp, "", 0, st["onlyInit"], ctx)
         tv.Opt("+Redraw")
         st["trunc"] := ctx["trunc"]
         if !st["advInit"] {
@@ -5209,6 +6238,27 @@ FolderDialog(mode, name := "", preset := "") {
             if (extra != "")
                 eAdv.Value := eAdv.Value extra
         }
+        Recount()
+        UpdateSimple()
+        UpdateCloudInfo()
+    }
+
+    ; "Only sync what is checked": the extra rules do not apply, the count message changes
+    OnlyChanged(*) {
+        on := tOnly["on"]
+        eAdv.Enabled := !on
+        advLbl.Text := T(on ? "fd_adv_off" : "fd_adv")
+        Recount()
+    }
+
+    ; "Check all" / "Uncheck all" buttons
+    SetAll(on, *) {
+        tv.Opt("-Redraw")
+        for id, nd in nodes {
+            nd[3] := on
+            tv.Modify(id, on ? "Check" : "-Check")
+        }
+        tv.Opt("+Redraw")
         Recount()
     }
 
@@ -5271,6 +6321,25 @@ FolderDialog(mode, name := "", preset := "") {
         rawText := Trim(ePath.Value)
         absp := RTrim(ExpandPath(rawText), "\")
         if !isEdit {
+            ; wrong level? the cloud folder already holds a folder with the name of the chosen one
+            if isCloud {
+                SplitPath(absp, &leafA, &parentA)
+                dupA := CloudDupDir(leafA)
+                if (dupA != "") {
+                    r := MsgBox(T("fd_cloud_fix", absp, name, dupA, parentA), "SyncDood", "YesNoCancel Icon! Default1")
+                    if (r = "Cancel")
+                        return
+                    if (r = "Yes") {
+                        ePath.Value := parentA
+                        UpdatePortable()
+                        LoadTree()
+                        return
+                    }
+                }
+            }
+            ; very general folders (Documents, Desktop, the user folder, a whole drive...)
+            if (IsBroadFolder(absp) && MsgBox(T("fd_root_confirm", absp), "SyncDood", "YesNo Icon! Default2") != "Yes")
+                return
             if (nm = "") {
                 MsgBox(T("fd_err_name"), "SyncDood", "Iconx")
                 return
@@ -5311,14 +6380,43 @@ FolderDialog(mode, name := "", preset := "") {
             }
         }
 
+        ; a huge folder is usually the wrong one (for example "Documents" instead of the game's folder)
+        if (!isEdit && st["trunc"] && MsgBox(T("fd_big_confirm", absp), "SyncDood", "YesNo Icon! Default2") != "Yes")
+            return
+
+        ; everything unchecked = nothing would sync (usually a slip): ask for at least one item
+        if (tChoose["on"] && tOnly["on"] && st["trunc"]) {
+            MsgBox(T("fd_only_trunc"), "SyncDood", "Iconx")
+            return
+        }
+        if (tChoose["on"] && nodes.Count > 0) {
+            anyOn := false
+            for id in nodes {
+                if tv.Get(id, "Check") {
+                    anyOn := true
+                    break
+                }
+            }
+            if !anyOn {
+                MsgBox(T("fd_err_none"), "SyncDood", "Iconx")
+                return
+            }
+        }
+
         ; rules: what was unchecked in the tree + the text rules
         pats := []
         seen := Map()
-        for rl in ExcTreeRules(tv, nodes, [])
-            AddPat(pats, seen, rl)
-        for ln in StrSplit(eAdv.Value, "`n", "`r")
-            AddPat(pats, seen, ln)
-        SaveExclusions(nm, pats)
+        onlyOn := (tChoose["on"] && tOnly["on"])
+        if onlyOn {                       ; whitelist: the checked items are the rules
+            for rl in ExcTreeAllow(tv, nodes, [])
+                AddPat(pats, seen, rl)
+        } else if tChoose["on"] {         ; simple mode = sync everything: no exclusions
+            for rl in ExcTreeRules(tv, nodes, [])
+                AddPat(pats, seen, rl)
+            for ln in StrSplit(eAdv.Value, "`n", "`r")
+                AddPat(pats, seen, ln)
+        }
+        SaveExclusions(nm, pats, onlyOn)
         if canEmpty
             IniWrite(tEmpty["on"] ? "1" : "0", IniFile, "emptydirs", nm)
 
@@ -5361,12 +6459,25 @@ FolderDialog(mode, name := "", preset := "") {
     tPort := AddToggle(d, "", 16, y, W, T("fd_portable", "%DOCUMENTS%"), true)
     y += 34
 
-    AddTxt(d, "", Format("x16 y{1} w{2} h20 +0x200", y, W), T("fd_tree"), "s9 bold", TH["text"], TH["bg"])
-    y += 20
-    AddTxt(d, "", Format("x16 y{1} w{2} h20 +0x200", y, W), T("fd_tree_help"), "s8 norm", TH["sub"], TH["bg"])
-    y += 22
+    if isCloud {
+        lCloud := AddTxt(d, "", Format("x16 y{1} w{2} h54", y, W), "", "s8 norm", TH["sub"], TH["bg"])
+        y += 58
+    }
+    tChoose := AddToggle(d, "", 16, y, W, T("fd_choose"), isEdit && cur.Length > 0)
+    y += 32
+    yBlock := y
+    lSimple := AddTxt(d, "", Format("x16 y{1} w{2} h60", y, W), "", "s9 norm", TH["sub"], TH["bg"])
+
+    ; ---- block "choose what to sync" (tree + extra rules); it starts at the same place as the simple text
+    AddTxt(d, advList, Format("x16 y{1} w{2} h24 +0x200", y, W - 290), T("fd_tree"), "s9 bold", TH["text"], TH["bg"])
+    AddBtn(d, advList, 16 + W - 282, y - 1, 136, 26, T("fd_checkall"), (*) => SetAll(true))
+    AddBtn(d, advList, 16 + W - 140, y - 1, 140, 26, T("fd_uncheckall"), (*) => SetAll(false))
+    y += 28
+    AddTxt(d, advList, Format("x16 y{1} w{2} h34", y, W), T("fd_tree_help"), "s8 norm", TH["sub"], TH["bg"])
+    y += 38
     d.SetFont("s9 norm c" TH["text"], "Segoe UI")
-    tv := d.Add("TreeView", Format("x16 y{1} w{2} h190 Checked c{3} Background{4}", y, W, TH["text"], TH["card"]))
+    tv := d.Add("TreeView", Format("x16 y{1} w{2} h130 Checked c{3} Background{4}", y, W, TH["text"], TH["card"]))
+    advList.Push(tv)
     il := IL_Create(2)
     iFolder := IL_Add(il, "shell32.dll", 4)
     iFile := IL_Add(il, "shell32.dll", 1)
@@ -5376,36 +6487,42 @@ FolderDialog(mode, name := "", preset := "") {
     try {
         DllCall("uxtheme\SetWindowTheme", "Ptr", tv.Hwnd, "Str", DarkNow ? "DarkMode_Explorer" : "Explorer", "Ptr", 0)
     }
-    y += 194
-    lInfo := AddTxt(d, "", Format("x16 y{1} w{2} h20 +0x200", y, W), "", "s9 norm", TH["sub"], TH["bg"])
-    y += 28
+    y += 134
+    lInfo := AddTxt(d, advList, Format("x16 y{1} w{2} h20 +0x200", y, W), "", "s9 norm", TH["sub"], TH["bg"])
+    y += 26
+    tOnly := AddToggle(d, advList, 16, y, W, T("fd_only"), st["onlyInit"])
+    y += 26
+    AddTxt(d, advList, Format("x48 y{1} w{2} h30", y, W - 32), T("fd_only_help"), "s8 norm", TH["sub"], TH["bg"])
+    y += 34
 
-    AddTxt(d, "", Format("x16 y{1} w200 h26 +0x200", y), T("fd_adv"), "s9 bold", TH["text"], TH["bg"])
+    advLbl := AddTxt(d, advList, Format("x16 y{1} w200 h26 +0x200", y), T("fd_adv"), "s9 bold", TH["text"], TH["bg"])
     xs := 222
     for sug in ["*.log", "*.tmp", "shaders/", "cache/", "*.qcow2"] {
         bw := 36 + StrLen(sug) * 7
-        AddBtn(d, "", xs, y, bw, 26, "+ " sug, AddRule.Bind(sug))
+        AddBtn(d, advList, xs, y, bw, 26, "+ " sug, AddRule.Bind(sug))
         xs += bw + 6
     }
     y += 30
     advTxt := ""
     for ln0 in advLines
         advTxt .= ln0 "`r`n"
-    eAdv := AddEdit(d, "", 16, y, W, advTxt, "r2 -Wrap +VScroll")
+    eAdv := AddEdit(d, advList, 16, y, W, advTxt, "r2 -Wrap +VScroll")
     y += 50
+    st["dy"] := (y - yBlock) - 64                   ; how much the controls below move up in simple mode
 
-    tEmpty := AddToggle(d, "", 16, y, W, T("fd_empty"), canEmpty && (isEdit ? EmptyDirsFor(name) : true))
+    tEmpty := AddToggle(d, lowList, 16, y, W, T("fd_empty"), canEmpty && (isEdit ? EmptyDirsFor(name) : true))
     y += 26
-    AddTxt(d, "", Format("x48 y{1} w{2} h34", y, W - 32), T(canEmpty ? "fd_empty_help" : "fd_empty_b2"), "s8 norm", TH["sub"], TH["bg"])
+    AddTxt(d, lowList, Format("x48 y{1} w{2} h34", y, W - 32), T(canEmpty ? "fd_empty_help" : "fd_empty_b2"), "s8 norm", TH["sub"], TH["bg"])
     if !canEmpty {
         tEmpty["box"].Enabled := false
         tEmpty["lbl"].Enabled := false
     }
     y += 44
 
-    AddBtn(d, "", 16, y, 150, 34, T(isEdit ? "ex_save" : "fd_add"), (*) => Accept(), "prim", "s9 bold")
-    AddBtn(d, "", 174, y, 110, 34, T("cd_cancel"), (*) => d.Destroy())
+    AddBtn(d, lowList, 16, y, 150, 34, T(isEdit ? "ex_save" : "fd_add"), (*) => Accept(), "prim", "s9 bold")
+    AddBtn(d, lowList, 174, y, 110, 34, T("cd_cancel"), (*) => d.Destroy())
     y += 48
+    st["h"] := y
 
     tv.OnEvent("ItemCheck", OnCheck)
     if !isEdit
@@ -5418,13 +6535,60 @@ FolderDialog(mode, name := "", preset := "") {
         eName.Value := leaf0
         st["auto"] := leaf0
     }
+    tOnly["box"].OnEvent("Click", OnlyChanged)
+    tOnly["lbl"].OnEvent("Click", OnlyChanged)
+    OnlyChanged()
+    tChoose["box"].OnEvent("Click", (*) => ApplyMode())
+    tChoose["lbl"].OnEvent("Click", (*) => ApplyMode())
     UpdatePortable()
     LoadTree()
-    d.Show("w" (W + 32) " h" y)
+    ApplyMode(false)
+    st["shown"] := true
+    d.Show("w" (W + 32) " h" (st["h"] - (tChoose["on"] ? 0 : st["dy"])))
+}
+
+; Direct contents of a cloud folder; folders end with "/". [] if it is empty or can't be read.
+CloudTopLs(path) {
+    tmp := A_Temp "\syncdood_cloudtop.txt"
+    try {
+        FileDelete(tmp)
+    }
+    code := -1
+    try {
+        code := RunWait(Format('{1} /c ""{2}" lsf "{3}" > "{4}""', A_ComSpec, Rclone, path, tmp), , "Hide")
+    }
+    txt := ""
+    try {
+        txt := FileRead(tmp, "UTF-8")
+    }
+    try {
+        FileDelete(tmp)
+    }
+    out := []
+    if (code != 0)
+        return out
+    for line in StrSplit(txt, "`n", "`r") {
+        if (line != "")
+            out.Push(line)
+    }
+    return out
+}
+
+; A folder that is almost never the one you want to sync as a whole (user folder, Documents, Desktop, a drive...)
+IsBroadFolder(p) {
+    p := StrLower(RTrim(p, "\"))
+    if RegExMatch(p, "^[a-z]:$")
+        return true
+    up := EnvGet("USERPROFILE")
+    for b in [up, A_MyDocuments, A_Desktop, up "\Downloads", EnvGet("APPDATA"), EnvGet("LOCALAPPDATA")] {
+        if (b != "" && StrLower(RTrim(b, "\")) = p)
+            return true
+    }
+    return false
 }
 
 ; Writes (or deletes) the exclusion rules file of a folder
-SaveExclusions(name, pats) {
+SaveExclusions(name, pats, only := false) {
     f := ExcludeFile(name)
     if (pats.Length = 0) {
         try {
@@ -5434,6 +6598,8 @@ SaveExclusions(name, pats) {
     }
     DirCreate(AppDir "\exclude")
     out := "# SyncDood exclusions for '" name "' (rclone syntax, one rule per line)`n"
+    if only
+        out .= "#only-checked`n"
     for pt in pats
         out .= pt "`n"
     try {
@@ -5481,12 +6647,32 @@ ExcTreeFill(tv, nodes, dirPath, rel, parentId, parentOff, ctx) {
             r := (rel = "") ? nm : rel "/" nm
             key := StrLower(r) (kind = 1 ? "/" : "")
             off := parentOff
-            if ctx["managed"].Has(key) {
-                ctx["used"][key] := true
-                off := true
+            chk := false
+            if ctx["only"] {
+                ; the rules are the items that ARE synced: checked if listed (or inside a listed folder),
+                ; and a folder is also checked when something inside it is listed
+                full := (!parentOff || ctx["managed"].Has(key))
+                if ctx["managed"].Has(key)
+                    ctx["used"][key] := true
+                chk := full
+                if (!chk && kind = 1) {
+                    for mk3 in ctx["managed"] {
+                        if (SubStr(mk3, 1, StrLen(key)) = key) {
+                            chk := true
+                            break
+                        }
+                    }
+                }
+                off := !full
+            } else {
+                if ctx["managed"].Has(key) {
+                    ctx["used"][key] := true
+                    off := true
+                }
+                chk := !off
             }
-            id := tv.Add(nm, parentId, (off ? "" : "Check") (kind = 1 ? ctx["iF"] : ctx["iD"]))
-            nodes[id] := [r, kind = 1, !off]
+            id := tv.Add(nm, parentId, (chk ? "Check" : "") (kind = 1 ? ctx["iF"] : ctx["iD"]))
+            nodes[id] := [r, kind = 1, chk]
             if (kind = 1)
                 ExcTreeFill(tv, nodes, dirPath "\" nm, r, id, off, ctx)
         }
@@ -5534,6 +6720,36 @@ ExcTreeRules(tv, nodes, out, id := 0) {
         c := tv.GetNext(c)
     }
     return out
+}
+
+; Paths for "only sync what is checked": a fully checked folder is one rule, otherwise each checked item
+ExcTreeAllow(tv, nodes, out, id := 0) {
+    c := id ? tv.GetChild(id) : tv.GetNext()
+    while c {
+        nd := nodes[c]
+        if tv.Get(c, "Check") {
+            if nd[2] {
+                if ExcTreeAllChecked(tv, c)
+                    out.Push("/" EscapeGlob(nd[1]) "/")
+                else
+                    ExcTreeAllow(tv, nodes, out, c)
+            } else {
+                out.Push("/" EscapeGlob(nd[1]))
+            }
+        }
+        c := tv.GetNext(c)
+    }
+    return out
+}
+
+ExcTreeAllChecked(tv, id) {
+    c := tv.GetChild(id)
+    while c {
+        if (!tv.Get(c, "Check") || !ExcTreeAllChecked(tv, c))
+            return false
+        c := tv.GetNext(c)
+    }
+    return true
 }
 
 ; Does this folder also sync its empty sub-folders? (the default is what the cloud supports)
@@ -5679,8 +6895,127 @@ SaveFolders() {
         IniWrite(FolderRaw.Get(nm, p), IniFile, "folders", nm)
 }
 
+; ---- export / import of the configuration (folders, exclusions, options; never passwords or tokens) ----
+ConfigKeys := ["language", "theme", "intervalMin", "pauseWhileRunning", "pruneCloudBackups", "backupKeepDays"
+    , "firstSyncWins", "maxDeletePct", "watchProcess", "settleSec", "resumeDelaySec"]
+
+ExportConfigUI(*) {
+    dest := FileSelect("S16", A_Desktop "\SyncDood-config.ini", T("cfg_export_title"), "SyncDood (*.ini)")
+    if (dest = "")
+        return
+    if !RegExMatch(dest, "i)\.ini$")
+        dest .= ".ini"
+    try {
+        FileDelete(dest)
+    }
+    try {
+        FileAppend("", dest, "UTF-16")     ; IniWrite keeps the file's encoding: UTF-16 so accents survive
+        IniWrite("SyncDood", dest, "meta", "app")
+        IniWrite(AppVersion, dest, "meta", "version")
+        for k in ConfigKeys {
+            v := IniRead(IniFile, "general", k, "")
+            if (v != "")
+                IniWrite(v, dest, "general", k)
+        }
+        for nm, p in Folders {
+            raw := FolderRaw.Get(nm, p)
+            if !InStr(raw, "%") {
+                port := PortablePath(ExpandPath(raw))
+                if (port != "")
+                    raw := port
+            }
+            IniWrite(raw, dest, "folders", nm)
+            ed := IniRead(IniFile, "emptydirs", nm, "")
+            if (ed != "")
+                IniWrite(ed, dest, "emptydirs", nm)
+            i := 0
+            for pat in ExcludePatterns(nm) {
+                i += 1
+                IniWrite(pat, dest, "exclude_" nm, i)
+            }
+            if OnlyMode(nm)
+                IniWrite("1", dest, "onlymode", nm)
+        }
+    } catch as e {
+        MsgBox(T("cfg_fail", e.Message), "SyncDood", "Iconx")
+        return
+    }
+    MsgBox(T("cfg_exported", dest), "SyncDood", "Iconi")
+}
+
+ImportConfigUI(*) {
+    if CheckBusy()
+        return
+    src := FileSelect(3, A_Desktop, T("cfg_import_title"), "SyncDood (*.ini)")
+    if (src = "")
+        return
+    if (IniRead(src, "meta", "app", "") != "SyncDood") {
+        MsgBox(T("cfg_bad"), "SyncDood", "Iconx")
+        return
+    }
+    secTxt := ""
+    try {
+        secTxt := IniRead(src, "folders")
+    }
+    names := []
+    raws := Map()
+    for line in StrSplit(secTxt, "`n", "`r") {
+        p := InStr(line, "=")
+        if (p > 1) {
+            nm := Trim(SubStr(line, 1, p - 1))
+            names.Push(nm)
+            raws[nm] := RTrim(Trim(SubStr(line, p + 1)), "\")
+        }
+    }
+    if (names.Length = 0) {
+        MsgBox(T("cfg_bad"), "SyncDood", "Iconx")
+        return
+    }
+    list := ""
+    for nm in names
+        list .= "`n - " nm (Folders.Has(nm) ? "  (" T("cfg_replace") ")" : "")
+    if (MsgBox(T("cfg_import_ask", names.Length, list), "SyncDood", "YesNo Icon?") != "Yes")
+        return
+    DirCreate(AppDir "\exclude")
+    for nm in names {
+        FolderRaw[nm] := raws[nm]
+        Folders[nm] := RTrim(ExpandPath(raws[nm]), "\")
+        ed := IniRead(src, "emptydirs", nm, "")
+        if (ed != "")
+            IniWrite(ed, IniFile, "emptydirs", nm)
+        pats := ""
+        try {
+            pats := IniRead(src, "exclude_" nm)
+        }
+        if (pats != "") {
+            out := ""
+            for line in StrSplit(pats, "`n", "`r") {
+                p := InStr(line, "=")
+                if (p > 1)
+                    out .= SubStr(line, p + 1) "`n"
+            }
+            if (IniRead(src, "onlymode", nm, "") = "1")
+                out := "#only-checked`n" out
+            try {
+                FileDelete(ExcludeFile(nm))
+            }
+            FileAppend(out, ExcludeFile(nm), "UTF-8")
+        }
+        try {
+            IniDelete(IniFile, "firstsync", nm)       ; it will preview and merge on its first sync here
+        }
+    }
+    for k in ConfigKeys {
+        v := IniRead(src, "general", k, "")
+        if (v != "")
+            IniWrite(v, IniFile, "general", k)
+    }
+    SaveFolders()
+    RestartApp(PG_FOLDERS)
+}
+
 ; Applies a settings change: restarts SyncDood and re-opens the window on the given page
-RestartApp(page := 4) {
+RestartApp(page := 5) {
     SaveHistory()
     IniWrite(page, IniFile, "general", "reopenUI")
     Reload()
@@ -5749,15 +7084,151 @@ OpenFolderUI(*) {
 
 ; ------------------------------------------------------------------ Cloud ----
 FillCloud() {
-    nm := IniRead(IniFile, "general", "cloudName", "")
-    if (nm = "") {
-        if RegExMatch(Remote, "i)^([a-z]:\\|\\\\)")
-            nm := T("c_local")
-        else
-            nm := T("c_unknown")
-    }
-    UI["cloudCur"].Text := nm
+    UI["cloudCur"].Text := CloudDisplayName()
     UI["cloudTgt"].Text := T("c_target", Remote)
+}
+
+; Name of the cloud in use. For "your cloud app's folder" it names the app when the path gives it away (MEGA, Google Drive...)
+CloudDisplayName() {
+    nm := IniRead(IniFile, "general", "cloudName", "")
+    id := IniRead(IniFile, "general", "cloudId", "")
+    isLocal := RegExMatch(Remote, "i)^([a-z]:\\|\\\\)")
+    if (isLocal && (id = "folder" || id = "")) {
+        app := CloudAppName(Remote)
+        if (app != "")
+            return T("c_app_of", app)
+    }
+    if (nm = "")
+        return isLocal ? T("c_local") : T("c_unknown")
+    return nm
+}
+
+; Which cloud app a local folder belongs to, judging by its path ("" if unknown)
+CloudAppName(path) {
+    apps := [["MEGA", "mega"], ["Google Drive", "google ?drive|my drive|mi unidad|drive for desktop"], ["OneDrive", "onedrive"]
+        , ["Dropbox", "dropbox"], ["iCloud Drive", "icloud"], ["pCloud", "pcloud"], ["Proton Drive", "proton ?drive"]
+        , ["Box", "box|box sync"], ["Koofr", "koofr"], ["Nextcloud", "nextcloud"], ["Synology Drive", "synology"]
+        , ["Sync.com", "sync\.com"], ["Yandex Disk", "yandex"]]
+    for app in apps {
+        if RegExMatch(path, "i)(^|[\\ _-])(" app[2] ")([\\ _-]|$)")
+            return app[1]
+    }
+    return ""
+}
+
+; "12.4 GB" style size (FormatSize stops at MB)
+BigSize(b) {
+    b := Number(b)
+    if (b < 1024)
+        return Round(b) " B"
+    if (b < 1048576)
+        return Round(b / 1024, 1) " KB"
+    if (b < 1073741824)
+        return Round(b / 1048576, 1) " MB"
+    if (b < 1099511627776)
+        return Round(b / 1073741824, 2) " GB"
+    return Round(b / 1099511627776, 2) " TB"
+}
+
+; Runs rclone with its output saved to a temp file; returns the text ("" if it failed)
+RcloneText(args) {
+    tmp := A_Temp "\syncdood_out.txt"
+    try {
+        FileDelete(tmp)
+    }
+    code := -1
+    try {
+        code := RunWait(Format('{1} /c ""{2}" {3} > "{4}" 2>nul"', A_ComSpec, Rclone, args, tmp), , "Hide")
+    }
+    txt := ""
+    try {
+        txt := FileRead(tmp, "UTF-8")
+    }
+    try {
+        FileDelete(tmp)
+    }
+    return (code = 0) ? txt : ""
+}
+
+; Space by folder: this PC, cloud, and the backups (cloud and local) of every folder
+SpacePanelUI(*) {
+    d := Gui("+Owner" MainGui.Hwnd, T("sp_title"))
+    d.BackColor := TH["bg"]
+    d.MarginX := 16
+    d.MarginY := 14
+    d.SetFont("s9 norm", "Segoe UI")
+    AddTxt(d, "", "x16 y14 w640 h22", T("sp_help"), "s9 norm", TH["sub"], TH["bg"])
+    d.SetFont("s9 norm c" TH["text"], "Segoe UI")
+    lv := d.Add("ListView", Format("x16 y44 w640 h300 -Multi -E0x200 c{1} Background{2}", TH["text"], TH["card"])
+        , [T("f_col_name"), T("sp_pc"), T("sp_cloud"), T("sp_bk_cloud"), T("sp_bk_pc")])
+    for nm, p in Folders
+        lv.Add(, nm, "…", "…", "…", "…")
+    lv.Add(, T("sp_total"), "", "", "", "")
+    lv.ModifyCol(1, 190)
+    loop 4
+        lv.ModifyCol(A_Index + 1, "AutoHdr")
+    try {
+        DllCall("uxtheme\SetWindowTheme", "Ptr", lv.Hwnd, "Str", DarkNow ? "DarkMode_Explorer" : "Explorer", "Ptr", 0)
+    }
+    alive := true
+    d.OnEvent("Close", (*) => (alive := false, d.Destroy()))
+    d.OnEvent("Escape", (*) => (alive := false, d.Destroy()))
+    AddBtn(d, "", 16, 356, 110, 34, T("sp_close"), (*) => (alive := false, d.Destroy()))
+    d.Show("w672 h406")
+
+    Fill() {
+        tot := [0, 0, 0, 0]
+        row := 0
+        for nm, p in Folders {
+            row += 1
+            if !alive
+                return
+            v := [0, 0, 0, 0]
+            v[1] := StrSplit(SideSize(p, nm), "|")[2]
+            if !alive
+                return
+            v[2] := StrSplit(SideSize(Remote "/" nm, nm), "|")[2]
+            if !alive
+                return
+            v[3] := StrSplit(SideSize(Remote "/_backup/" nm), "|")[2]
+            if !alive
+                return
+            v[4] := StrSplit(SideSize(BackupDir "\" nm), "|")[2]
+            for i, x in v
+                tot[i] += x
+            try {
+                lv.Modify(row, , nm, BigSize(v[1]), BigSize(v[2]), BigSize(v[3]), BigSize(v[4]))
+            }
+        }
+        try {
+            lv.Modify(row + 1, , T("sp_total"), BigSize(tot[1]), BigSize(tot[2]), BigSize(tot[3]), BigSize(tot[4]))
+        }
+    }
+    SetTimer(Fill, -80)
+}
+
+; "Check space": what SyncDood occupies in the cloud and, when the cloud reports it, the account's free space
+CloudSpaceUI(*) {
+    UI["cloudSpace"].Text := T("c_space_wait")
+    ToolTip(T("c_space_wait"))
+    id := IniRead(IniFile, "general", "cloudId", "")
+    sz := RcloneText(Format('size --json "{1}"', Remote))
+    ab := ""
+    if (id != "folder" && id != "nas" && !RegExMatch(Remote, "i)^([a-z]:\\|\\\\)"))
+        ab := RcloneText(Format('about --json "{1}"', RegExReplace(Remote, "^([^:]+:).*$", "$1")))
+    ToolTip()
+    out := ""
+    if (RegExMatch(sz, '"count"\s*:\s*(\d+)', &mc) && RegExMatch(sz, '"bytes"\s*:\s*(\d+)', &mb))
+        out := T("c_space_used", BigSize(mb[1]), mc[1])
+    else
+        out := T("c_space_fail")
+    if (RegExMatch(ab, '"total"\s*:\s*(\d+)', &mt) && RegExMatch(ab, '"used"\s*:\s*(\d+)', &mu)) {
+        free := Number(mt[1]) - Number(mu[1])
+        out .= "`n" T("c_space_acct", BigSize(mu[1]), BigSize(mt[1]), BigSize(Max(0, free)))
+    } else if (id != "folder" && id != "nas") {
+        out .= "`n" T("c_space_none")
+    }
+    UI["cloudSpace"].Text := out
 }
 
 ChangeCloudUI(*) {
