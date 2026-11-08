@@ -350,6 +350,12 @@ The old `.exe` files (wherever you put them) and any `SaveSync` / `RSY` folder i
 - 🧪 `rclone bisync` is marked *beta* by the rclone project. It works well with small folders, but keep a separate copy of your saves once in a while.
 - 🌍 The texts follow the Windows language (Spanish if Windows is in Spanish, English otherwise; you can force it in *Options*).
 
+## 📄 License
+
+SyncDood is free software under the **[GNU GPL v2](LICENSE)**. You can use, study, modify and share it; if you distribute it (or a modified version), it must stay under the same license and come with its source code.
+
+The compiled `SyncDood.exe` includes [AutoHotkey v2](https://www.autohotkey.com) (GPLv2) and [rclone](https://rclone.org) (MIT). Their notices and source links are in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
 ## 💛 Credits
 
 Made by **KyaaaDood** with Claude AI. 🤖✨
