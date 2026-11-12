@@ -10,7 +10,7 @@
 
 # 🎮 SyncDood — your saves and states, the same on every PC
 
-> **Version 0.2.1** · 🌍 Follows the Windows language (English / Spanish)
+> **Version 0.3** · 🌍 Follows the Windows language (English / Spanish)
 
 SyncDood keeps your **game saves** 💾 and **save states** 📸 identical on all your PCs through **your own cloud** ☁️. It sits in the system tray, and its window lets you see the history and change folders, cloud and options — **no file editing needed**. Made with RetroArch in mind, but it works with any folder.
 
@@ -186,9 +186,9 @@ SyncDood also asks for confirmation if you pick a very general folder (your user
 | `/logs/` | only the `logs` folder at the root |
 | `/xbox_hdd.qcow2` | one specific file at the root |
 
-In **Only sync what is checked** mode the extra rules box is not used (the checked items are the rules), and the Folders list shows *Only checked* for that folder. If the folder has more than 4,000 items the tree can't list them all, so pick a subfolder or use the normal mode.
+In **Only sync what is checked** mode the extra rules box is not used (the checked items are the rules), and the Folders list shows *Only checked* for that folder. The tree lists a folder's content when you open it, so it has **no limit**: a folder with 8,000 files in its root and sub-folders with 13,000 more is listed completely, and "only checked" sees every item.
 
-There are buttons with common suggestions (`*.log`, `shaders/`, `cache/`, `*.qcow2`). What you uncheck in the tree is saved as exact-path rules (`/collections/old/`), so tree and rules always agree; trees show up to 4,000 items (use the rules for the rest).
+There are buttons with common suggestions (`*.log`, `shaders/`, `cache/`, `*.qcow2`). What you uncheck in the tree is saved as exact-path rules (`/collections/old/`), so tree and rules always agree; the tree loads each folder when you open it, so every file and sub-folder is listed, however many there are. A folder you never open simply follows its own check box. (When you add a folder with more than 4,000 items inside, SyncDood only asks you to confirm it is the right one; that count never limits what gets synced.)
 
 - 🔁 After editing rules, the next sync re-lists that folder by itself (merges, **newest wins**, deletes nothing).
 - 🔒 Excluded items are ignored **on both sides and never deleted**: what was already in the cloud stays (delete it by hand to free space).
@@ -236,10 +236,10 @@ SyncDood checks the GitHub *Releases* (`kyaaadood/SyncDood`) in the background, 
 <details>
 <summary>🏷️ <b>Publishing a new version</b> (for the developer)</summary>
 
-The version lives in **one place**: the `AppVersion` line at the top of `SyncDood.ahk` (now `"0.2.1"`).
+The version lives in **one place**: the `AppVersion` line at the top of `SyncDood.ahk` (now `"0.3"`).
 
-1. Change `AppVersion` (e.g. `"0.2.1"`).
-2. Create a GitHub *Release* in `kyaaadood/SyncDood` with the same number and a leading `v` (`v0.2.1`), and **attach the files the updater installs**: `SyncDood.exe` (from `dist\` after `Build.bat`) for the single-file version, and a `.zip` with the `SyncDood` folder (without `rclone.exe` or `ahk\`) for the loose-script version. Without a `.zip`, GitHub's automatic source zip is used.
+1. Change `AppVersion` (e.g. `"0.4"`).
+2. Create a GitHub *Release* in `kyaaadood/SyncDood` with the same number and a leading `v` (`v0.4`), and **attach the files the updater installs**: `SyncDood.exe` (from `dist\` after `Build.bat`) for the single-file version, and a `.zip` with the `SyncDood` folder (without `rclone.exe` or `ahk\`) for the loose-script version. Without a `.zip`, GitHub's automatic source zip is used.
 3. Running copies compare that tag with their `AppVersion` and offer the download if the tag is newer.
 
 `Build.bat` also reads `AppVersion` and writes it into `SyncDood.exe`'s properties.

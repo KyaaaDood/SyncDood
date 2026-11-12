@@ -10,7 +10,7 @@
 
 # 🎮 SyncDood — tus partidas y states, iguales en todas tus PCs
 
-> **Versión 0.2.1** · 🌍 Se adapta al idioma de Windows (español / inglés)
+> **Versión 0.3** · 🌍 Se adapta al idioma de Windows (español / inglés)
 
 SyncDood mantiene tus **partidas guardadas** 💾 y tus **estados (states)** 📸 iguales en todas tus PCs usando **tu propia nube** ☁️. Vive en la bandeja del sistema y su ventana te deja ver el historial y cambiar carpetas, nube y opciones **sin editar ningún archivo**. Pensado para RetroArch, pero funciona con cualquier carpeta.
 
@@ -186,9 +186,9 @@ SyncDood también pide confirmación si eliges una carpeta muy general (tu carpe
 | `/logs/` | solo la carpeta `logs` en la raíz |
 | `/xbox_hdd.qcow2` | un archivo concreto en la raíz |
 
-En el modo **Sincronizar solo lo marcado** el cuadro de reglas extra no se usa (lo marcado son las reglas) y la lista de Carpetas muestra *Solo lo marcado* para esa carpeta. Si la carpeta tiene más de 4,000 elementos el árbol no puede listarlos todos: elige una subcarpeta o usa el modo normal.
+En el modo **Sincronizar solo lo marcado** el cuadro de reglas extra no se usa (lo marcado son las reglas) y la lista de Carpetas muestra *Solo lo marcado* para esa carpeta. El árbol lista el contenido de una carpeta cuando la abres, así que **no tiene límite**: una carpeta con 8,000 archivos en su raíz y subcarpetas con otros 13,000 se lista completa, y «solo lo marcado» ve cada elemento.
 
-Hay botones con sugerencias comunes (`*.log`, `shaders/`, `cache/`, `*.qcow2`). Lo que desmarcas en el árbol se guarda como reglas de ruta exacta (`/collections/old/`), así que árbol y reglas siempre coinciden; el árbol muestra hasta 4,000 elementos (para el resto usa las reglas).
+Hay botones con sugerencias comunes (`*.log`, `shaders/`, `cache/`, `*.qcow2`). Lo que desmarcas en el árbol se guarda como reglas de ruta exacta (`/collections/old/`), así que árbol y reglas siempre coinciden; el árbol carga cada carpeta cuando la abres, así que se listan todos los archivos y subcarpetas, sean cuantos sean. Una carpeta que nunca abres simplemente sigue su propia casilla. (Al agregar una carpeta con más de 4,000 elementos dentro, SyncDood solo te pide confirmar que es la correcta; ese conteo nunca limita lo que se sincroniza.)
 
 - 🔁 Al editar las reglas, la siguiente sync vuelve a listar esa carpeta sola (junta, **gana el más nuevo**, no borra nada).
 - 🔒 Lo excluido se ignora **en ambos lados y nunca se borra**: lo que ya estaba en la nube se queda (bórralo a mano para liberar espacio).
@@ -236,10 +236,10 @@ SyncDood consulta las *Releases* de GitHub (`kyaaadood/SyncDood`) en segundo pla
 <details>
 <summary>🏷️ <b>Publicar una versión nueva</b> (para quien desarrolla)</summary>
 
-La versión vive en **un solo lugar**: la línea `AppVersion` al inicio de `SyncDood.ahk` (ahora `"0.2.1"`).
+La versión vive en **un solo lugar**: la línea `AppVersion` al inicio de `SyncDood.ahk` (ahora `"0.3"`).
 
-1. Cambia `AppVersion` (p. ej. `"0.2.1"`).
-2. Crea una *Release* en GitHub en `kyaaadood/SyncDood` con el mismo número y una `v` delante (`v0.2.1`), y **adjunta los archivos que instala el actualizador**: `SyncDood.exe` (de `dist\` tras `Build.bat`) para la versión de un solo archivo, y un `.zip` con la carpeta `SyncDood` (sin `rclone.exe` ni `ahk\`) para la versión de script suelto. Sin `.zip`, se usa el zip automático de GitHub.
+1. Cambia `AppVersion` (p. ej. `"0.4"`).
+2. Crea una *Release* en GitHub en `kyaaadood/SyncDood` con el mismo número y una `v` delante (`v0.4`), y **adjunta los archivos que instala el actualizador**: `SyncDood.exe` (de `dist\` tras `Build.bat`) para la versión de un solo archivo, y un `.zip` con la carpeta `SyncDood` (sin `rclone.exe` ni `ahk\`) para la versión de script suelto. Sin `.zip`, se usa el zip automático de GitHub.
 3. Las copias en uso comparan esa etiqueta con su `AppVersion` y ofrecen la descarga si la etiqueta es más nueva.
 
 `Build.bat` también lee `AppVersion` y la escribe en las propiedades de `SyncDood.exe`.
